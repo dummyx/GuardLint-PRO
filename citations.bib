@@ -1,0 +1,190 @@
+@article{static_analysis_use_after_free_cpp,
+   title={Static Analysis Framework for Detecting Use-After-Free Bugs in C++},
+   volume={410},
+   ISSN={2075-2180},
+   url={http://dx.doi.org/10.4204/EPTCS.410.7},
+   DOI={10.4204/eptcs.410.7},
+   journal={Electronic Proceedings in Theoretical Computer Science},
+   publisher={Open Publishing Association},
+   author={Teodorescu, Vlad-Alexandru and Lucanu, Dorel},
+   year={2024},
+   month=oct, pages={99–115} }
+
+@INPROCEEDINGS{queryx_cots_binaries,
+  author={Han, HyungSeok and Kyea, JeongOh and Jin, Yonghwi and Kang, Jinoh and Pak, Brian and Yun, Insu},
+  booktitle={2023 IEEE Symposium on Security and Privacy (SP)}, 
+  title={QueryX: Symbolic Query on Decompiled Code for Finding Bugs in COTS Binaries}, 
+  year={2023},
+  volume={},
+  number={},
+  pages={3279-3295},
+  keywords={Privacy;Codes;Scalability;Source coding;Computer bugs;Binary codes;Security},
+  doi={10.1109/SP46215.2023.10179314}}
+
+
+@article{codeql_multilingual,
+author = {Youn, Dongjun and Lee, Sungho and Ryu, Sukyoung},
+title = {Declarative static analysis for multilingual programs using CodeQL},
+journal = {Software: Practice and Experience},
+volume = {53},
+number = {7},
+pages = {1472-1495},
+keywords = {declarative static program analysis, JNI programs, multilingual programs, Python-C programs},
+doi = {https://doi.org/10.1002/spe.3199},
+url = {https://onlinelibrary.wiley.com/doi/abs/10.1002/spe.3199},
+eprint = {https://onlinelibrary.wiley.com/doi/pdf/10.1002/spe.3199},
+abstract = {Summary Declarative static program analysis has become one of the widely-used program analysis techniques. Declarative static analyzers perform three steps: creating databases of facts from program source code, evaluating rules to generate new facts, and running queries over facts to extract all information related to specific properties via query systems. Declarative static analyzers can easily target diverse programming languages by modifying only databases and rules for new languages. Because query systems are independent of programming languages, they are reusable for new languages. However, even when declarative analyzers support multiple programming languages they do not currently support the analysis of multilingual programs written in two or more programming languages. We propose a systematic methodology that extends a declarative static analyzer supporting multiple languages to support multilingual programs as well. The main idea is to reuse existing components of the analyzer. Our approach first generates a merged database of facts, consisting of multiple logical language spaces. It allows existing language-specific rules to derive new facts for the corresponding language from the facts in the corresponding language space. Then, it defines language-interoperation rules that handle the language interoperation semantics. Finally, it uses the same query system to get analysis results leveraging the language interoperation semantics. We develop a proof-of-concept declarative static analyzer for multilingual programs by extending CodeQL, which can track dataflows across language boundaries. Our evaluation shows that the analyzer successfully tracks dataflows across Java-C and Python-C language boundaries and detects genuine interoperation bugs in real-world multilingual programs.},
+year = {2023}
+}
+
+@article{static_analysis_llm,
+author = {Li, Haonan and Hao, Yu and Zhai, Yizhuo and Qian, Zhiyun},
+title = {Enhancing Static Analysis for Practical Bug Detection: An LLM-Integrated Approach},
+year = {2024},
+issue_date = {April 2024},
+publisher = {Association for Computing Machinery},
+address = {New York, NY, USA},
+volume = {8},
+number = {OOPSLA1},
+url = {https://doi.org/10.1145/3649828},
+doi = {10.1145/3649828},
+abstract = {While static analysis is instrumental in uncovering software bugs, its precision in analyzing large and intricate codebases remains challenging. The emerging prowess of Large Language Models (LLMs) offers a promising avenue to address these complexities. In this paper, we present LLift, a pioneering framework that synergizes static analysis and LLMs, with a spotlight on identifying Use Before Initialization (UBI) bugs within the Linux kernel. Drawing from our insights into variable usage conventions in Linux, we enhance path analysis using post-constraint guidance. This approach, combined with our methodically crafted procedures, empowers LLift to adeptly handle the challenges of bug-specific modeling, extensive codebases, and the unpredictable nature of LLMs. Our real-world evaluations identified four previously undiscovered UBI bugs in the mainstream Linux kernel, which the Linux community has acknowledged. This study reaffirms the potential of marrying static program analysis with LLMs, setting a compelling direction for future research in this area.},
+journal = {Proc. ACM Program. Lang.},
+month = apr,
+articleno = {111},
+numpages = {26},
+keywords = {Static analysis, bug detection, large language model}
+}
+
+@inproceedings{paralegal_static_analysis_privacy_bugs,
+  title={Paralegal: Practical Static Analysis for Privacy Bugs},
+  author={Adam, Justus and Zech, Carolyn and Zhu, Livia and Rajesh, Sreshtaa and Harbison, Nathan and Jethwa, Mithi and Crichton, Will and Krishnamurthi, Shriram and Schwarzkopf, Malte},
+  booktitle={19th USENIX Symposium on Operating Systems Design and Implementation (OSDI 25)},
+  pages={957--978},
+  year={2025}
+}
+
+
+@inproceedings{charoenwet2024empirical,
+author = {Charoenwet, Wachiraphan and Thongtanunam, Patanamon and Pham, Van-Thuan and Treude, Christoph},
+title = {An Empirical Study of Static Analysis Tools for Secure Code Review},
+year = {2024},
+isbn = {9798400706127},
+publisher = {Association for Computing Machinery},
+address = {New York, NY, USA},
+url = {https://doi.org/10.1145/3650212.3680313},
+doi = {10.1145/3650212.3680313},
+abstract = {Early identification of security issues in software development is vital to minimize their unanticipated impacts. Code review is a widely used manual analysis method that aims to uncover security issues along with other coding issues in software projects. While some studies suggest that automated static application security testing tools (SASTs) could enhance security issue identification, there is limited understanding of SAST's practical effectiveness in supporting secure code review. Moreover, most SAST studies rely on synthetic or fully vulnerable versions of the subject program, which may not accurately represent real-world code changes in the code review process. To address this gap, we study C/C++ SASTs using a dataset of actual code changes that contributed to exploitable vulnerabilities. Beyond SAST's effectiveness, we quantify potential benefits when changed functions are prioritized by SAST warnings. Our dataset comprises 319 real-world vulnerabilities from 815 vulnerability-contributing commits (VCCs) in 92 C and C++ projects. The result reveals that a single SAST can produce warnings in vulnerable functions of 52\% of VCCs. Prioritizing changed functions with SAST warnings can improve accuracy (i.e., 12\% of precision and 5.6\% of recall) and reduce Initial False Alarm (lines of code in non-vulnerable functions inspected until the first vulnerable function) by 13\%. Nevertheless, at least 76\% of the warnings in vulnerable functions are irrelevant to the VCCs, and 22\% of VCCs remain undetected due to limitations of SAST rules. Our findings highlight the benefits and the remaining gaps of SAST-supported secure code reviews and challenges that should be addressed in future work.},
+booktitle = {Proceedings of the 33rd ACM SIGSOFT International Symposium on Software Testing and Analysis},
+pages = {691–703},
+numpages = {13},
+keywords = {Code Changes Prioritization, Code Review, Static Application Security Testing Tool},
+location = {Vienna, Austria},
+series = {ISSTA 2024}
+}
+
+@InProceedings{ql_ecoop,
+  author =	{Avgustinov, Pavel and de Moor, Oege and Jones, Michael Peyton and Sch\"{a}fer, Max},
+  title =	{{QL: Object-oriented Queries on Relational Data}},
+  booktitle =	{30th European Conference on Object-Oriented Programming (ECOOP 2016)},
+  pages =	{2:1--2:25},
+  series =	{Leibniz International Proceedings in Informatics (LIPIcs)},
+  ISBN =	{978-3-95977-014-9},
+  ISSN =	{1868-8969},
+  year =	{2016},
+  volume =	{56},
+  editor =	{Krishnamurthi, Shriram and Lerner, Benjamin S.},
+  publisher =	{Schloss Dagstuhl -- Leibniz-Zentrum f{\"u}r Informatik},
+  address =	{Dagstuhl, Germany},
+  URL =		{https://drops.dagstuhl.de/entities/document/10.4230/LIPIcs.ECOOP.2016.2},
+  URN =		{urn:nbn:de:0030-drops-60968},
+  doi =		{10.4230/LIPIcs.ECOOP.2016.2},
+  annote =	{Keywords: Object orientation, Datalog, query languages, prescriptive typing}
+}
+
+
+@misc{hassler2025comparativestudyfuzzersstatic,
+      title={A Comparative Study of Fuzzers and Static Analysis Tools for Finding Memory Unsafety in C and C++}, 
+      author={Keno Hassler and Philipp Görz and Stephan Lipp and Thorsten Holz and Marcel Böhme},
+      year={2025},
+      eprint={2505.22052},
+      archivePrefix={arXiv},
+      primaryClass={cs.CR},
+      url={https://arxiv.org/abs/2505.22052}, 
+}
+
+@inproceedings{spatio_temporal_context_reduction,
+author = {Yan, Hua and Sui, Yulei and Chen, Shiping and Xue, Jingling},
+title = {Spatio-temporal context reduction: a pointer-analysis-based static approach for detecting use-after-free vulnerabilities},
+year = {2018},
+isbn = {9781450356381},
+publisher = {Association for Computing Machinery},
+address = {New York, NY, USA},
+url = {https://doi.org/10.1145/3180155.3180178},
+doi = {10.1145/3180155.3180178},
+abstract = {Zero-day Use-After-Free (UAF) vulnerabilities are increasingly popular and highly dangerous, but few mitigations exist. We introduce a new pointer-analysis-based static analysis, CRed, for finding UAF bugs in multi-MLOC C source code efficiently and effectively. CRed achieves this by making three advances: (i) a spatio-temporal context reduction technique for scaling down soundly and precisely the exponential number of contexts that would otherwise be considered at a pair of free and use sites, (ii) a multi-stage analysis for filtering out false alarms efficiently, and (iii) a path-sensitive demand-driven approach for finding the points-to information required.We have implemented CRed in LLVM-3.8.0 and compared it with four different state-of-the-art static tools: CBMC (model checking), Clang (abstract interpretation), Coccinelle (pattern matching), and Supa (pointer analysis) using all the C test cases in Juliet Test Suite (JTS) and 10 open-source C applications. For the ground-truth validated with JTS, CRed detects all the 138 known UAF bugs as CBMC and Supa do while Clang and Coccinelle miss some bugs, with no false alarms from any tool. For practicality validated with the 10 applications (totaling 3+ MLOC), CRed reports 132 warnings including 85 bugs in 7.6 hours while the existing tools are either unscalable by terminating within 3 days only for one application (CBMC) or impractical by finding virtually no bugs (Clang and Coccinelle) or issuing an excessive number of false alarms (Supa).},
+booktitle = {Proceedings of the 40th International Conference on Software Engineering},
+pages = {327–337},
+numpages = {11},
+keywords = {bug detection, program analysis, use-after-free},
+location = {Gothenburg, Sweden},
+series = {ICSE '18}
+}
+
+@inproceedings{static_analysis_dangling_pointer,
+author = {Caballero, Juan and Grieco, Gustavo and Marron, Mark and Nappa, Antonio},
+title = {Undangle: early detection of dangling pointers in use-after-free and double-free vulnerabilities},
+year = {2012},
+isbn = {9781450314541},
+publisher = {Association for Computing Machinery},
+address = {New York, NY, USA},
+url = {https://doi.org/10.1145/2338965.2336769},
+doi = {10.1145/2338965.2336769},
+abstract = {Use-after-free vulnerabilities are rapidly growing in popularity, especially for exploiting web browsers. Use-after-free (and double-free) vulnerabilities are caused by a program operating on a dangling pointer. In this work we propose early detection, a novel runtime approach for finding and diagnosing use-after-free and double-free vulnerabilities. While previous work focuses on the creation of the vulnerability (i.e., the use of a dangling pointer), early detection shifts the focus to the creation of the dangling pointer(s) at the root of the vulnerability. Early detection increases the effectiveness of testing by identifying unsafe dangling pointers in executions where they are created but not used. It also accelerates vulnerability analysis and minimizes the risk of incomplete fixes, by automatically collecting information about all dangling pointers involved in the vulnerability. We implement our early detection technique in a tool called Undangle. We evaluate Undangle for vulnerability analysis on 8 real-world vulnerabilities. The analysis uncovers that two separate vulnerabilities in Firefox had a common root cause and that their patches did not completely fix the underlying bug. We also evaluate Undangle for testing on the Firefox web browser identifying a potential vulnerability.},
+booktitle = {Proceedings of the 2012 International Symposium on Software Testing and Analysis},
+pages = {133–143},
+numpages = {11},
+location = {Minneapolis, MN, USA},
+series = {ISSTA 2012}
+}
+
+@misc{recently_fixed_guard_vm_backtrace,
+	title = {{Revision fd59ac64 - vm_backtrace.c: add RB_GC_GUARD for `name` in location_format
+
+`name` is used... - Ruby - Ruby Issue Tracking System}},
+	url = {https://bugs.ruby-lang.org/projects/ruby-master/repository/git/revisions/fd59ac6410d0cc93a8baaa42df77491abdb2e9b6},
+}
+
+@book{gchandbook,
+author = {Jones, Richard and Hosking, Antony and Moss, Eliot},
+title = {The Garbage Collection Handbook: The Art of Automatic Memory Management},
+year = {2011},
+isbn = {1420082795},
+publisher = {Chapman \& Hall/CRC},
+edition = {1st},
+abstract = {Published in 1996, Richard Joness Garbage Collection was a milestone in the area of automatic memory management. The field has grown considerably since then, sparking a need for an updated look at the latest state-of-the-art developments. The Garbage Collection Handbook: The Art of Automatic Memory Management brings together a wealth of knowledge gathered by automatic memory management researchers and developers over the past fifty years. The authors compare the most important approaches and state-of-the-art techniques in a single, accessible framework. The book addresses new challenges to garbage collection made by recent advances in hardware and software. It explores the consequences of these changes for designers and implementers of high performance garbage collectors. Along with simple and traditional algorithms, the book covers parallel, incremental, concurrent, and real-time garbage collection. Algorithms and concepts are often described with pseudocode and illustrations. The nearly universal adoption of garbage collection by modern programming languages makes a thorough understanding of this topic essential for any programmer. This authoritative handbook gives expert insight on how different collectors work as well as the various issues currently facing garbage collectors. Armed with this knowledge, programmers can confidently select and configure the many choices of garbage collectors. Web ResourceThe books online bibliographic database at www.gchandbook.org includes over 2,500 garbage collection-related publications. Continually updated, it contains abstracts for some entries and URLs or DOIs for most of the electronically available ones. The database can be searched online or downloaded as BibTeX, PostScript, or PDF.}
+}
+
+
+@article{ruby_conservative,
+ author = {耕一, 笹田 and Koichi, Sasada},
+ issue = {2},
+ journal = {情報処理学会論文誌プログラミング（PRO）},
+ month = {Mar},
+ pages = {48--48},
+ title = {Rubyのメモリ管理の改善},
+ volume = {3},
+ year = {2010}
+}
+
+@techreport{UgawaFujimoto2019PRO,
+  author      = {Tomoharu Ugawa and Taiki Fujimoto},
+  title       = {Finding Errors in Registrations of Local Variables for Accurate Garbage Collection},
+  institution = {Information Processing Society of Japan, SIG Programming (PRO)},
+  type        = {Presentation Materials},
+  year        = {2019},
+  month       = {7},
+  day         = {26},
+  number      = {2019-2-(8)},
+  note        = {In Japanese. Original title: {精確なガーベージコレクションのための局所変数登録誤りの発見}.}
+}

@@ -1,0 +1,52 @@
+%% LaTeX additional style for PRO presentation
+%% Author: Kiminori MATSUZAKI <matsuzaki.kiminori@kochi-tech.ac.jp>
+%% Date: 2012-08-24
+%% Note: for ipsj.cls 2012/06/01 v1.03
+%%
+%% Author: Shigeyuki SATO <sato.shigeyuki@uec.ac.jp>
+%% Date: 2025-04-05
+%% Note: Add \PROtitlenote to ipsj.cls 2025/02/05 v4.1
+
+
+\def\PROheadtitle#1{\gdef\@PROheadtitle{#1}}
+
+%% Comes from ipsj.cls
+\def\ps@PROheadings{
+ \def\@oddhead{\@Ltop
+\rlap{\small
+\ifDS@english
+{\HeadfontE \@PROheadtitle}
+\else
+{\HeadfontJ \@PROheadtitle}
+\fi
+}
+\hfil\@Rtop}
+\let\@evenhead\@oddhead
+\def\@oddfoot{\@Lbot
+\hfil
+{\botnomble
+{\thepage}}
+\@Rbot}
+\let\@evenfoot\@oddfoot
+\let\@mkboth\@gobbletwo
+}
+\let\ps@IPSJTITLEheadings=\ps@PROheadings
+\let\ps@headings=\ps@PROheadings
+\pagestyle{headings}
+
+%% Received/Accepted dates are not included
+\def\@uketsuke{}
+\def\@euketsuke{}
+
+%% To remove ``Regular Paper'' from the head of english title
+%% Option DAM is included as default....
+\def\SHUBETUname@DAM{\ifDS@english%
+\else \leavevmode \fi}%%
+
+%% \PROtitlenote for notice on manuscript
+\newcommand{\PROtitlenote}[1]{\def\@PROtitlenote{#1}}
+\def\@PROtitlenote{}
+%% Suppress printing \footnotemark and numbers for \thanks
+\def\thanks#1{\protected@xdef\@thanks{\@thanks\protect\footnotetext{#1}}}
+\let\@origtitle\title
+\def\title#1{\@origtitle{\ifx\@PROtitlenote\@empty{}\else\thanks{\@PROtitlenote}\fi#1}}
