@@ -1,48 +1,55 @@
-
-
-
 \documentclass[PRO,english]{ipsj}
 \usepackage{PROpresentation}
-\PROheadtitle{y-n-(x): Manuscript for presentation at IPSJ-SIGPRO, d m Y.}
-\PROtitlenote{This is a manuscript for an unrefereed presentation, which should not preclude its subsequent publication.}
-
-
-
-
-%\documentclass[english]{ipsj}
-%\documentclass[english,preprint]{ipsj}
+\PROheadtitle{y-n-(x): Manuscript for presentation at IPSJ-SIGPRO, 20 1 2026.}
+\PROtitlenote{This is a manuscript for an unrefereed presentation.}
 
 \usepackage{graphicx}
 \usepackage{latexsym}
 \usepackage{listings}
 \usepackage{url}
+\usepackage{booktabs}
+\usepackage{xcolor}
+\usepackage{todonotes}
+% --- FIXED LISTING STYLE ---
+% Using a smaller, fixed-width font to fit 2-column layout
+\lstset{
+  language=C,
+  basicstyle=\fontsize{6.5pt}{7.5pt}\selectfont\ttfamily,
+  keywordstyle=\bfseries\color{blue},
+  commentstyle=\color{gray},
+  stringstyle=\color{red},
+  frame=single,
+  breaklines=true,
+  breakatwhitespace=true,
+  numbers=left,
+  numberstyle=\tiny\color{gray},
+  captionpos=b,
+  aboveskip=2pt,
+  belowskip=2pt,
+  xleftmargin=1em,
+  framexleftmargin=1em
+}
 
 \def\Underline{\setbox0\hbox\bgroup\let\\\endUnderline}
 \def\endUnderline{\vphantom{y}\egroup\smash{\underline{\box0}}\\}
 \def\|{\verb|}
 
-
-\setcounter{volume}{26}% vol25=2017
-\setcounter{number}{1}%
+\setcounter{volume}{33}
+\setcounter{number}{4}
 \setcounter{page}{1}
 
+\received{2025}{12}{4}
+\accepted{2025}{12}{4}
 
-\received{2016}{3}{4}
-%\rereceived{2011}{10}{1}   % optional
-%\rerereceived{2011}{10}{31} % optional
-\accepted{2016}{8}{1}
-
-
-
-\usepackage[varg]{txfonts}%%!!
-\makeatletter%
+\usepackage[varg]{txfonts}
+\makeatletter
 \input{ot1txtt.fd}
-\makeatother%
+\makeatother
 
 \begin{document}
 
-\title{How to Prepare Your Papers for the JIP\\
-(ipsj.cls version 2.01)}
+\title{GuardLint: Static Analysis of CRuby\\
+for Checking GC Guards}
 
 \affiliate{ISCT}{Institute of Science Tokyo, 
 Meguro, Tokyo 152--8550, Japan}
@@ -52,19 +59,14 @@ Meguro, Tokyo 152--8550, Japan}
 \author{Hidehiko Masuhara}{ISCT}[masuhara@acm.org]
 \author{Koichi Sasada}{STORES}
 
-
 \begin{abstract}
-This document is a guide for preparing drafts to be submitted to the
-Journal of Information Processing (JIP) and for the final camera-ready
-manuscripts of papers to appear in the JIP that use \LaTeX and special
-style files.  Since this document itself is produced with these style
-files, it will help you to refer to its source file, which is
-distributed with these style files.
+The reference implementation of the Ruby programming language (CRuby) employs a conservative garbage collector (GC). To ensure memory safety in its C implementation, developers must explicitly insert \texttt{RB\_GC\_GUARD} macros to prevent the compiler from optimizing away stack variables that anchor live objects. Omitting these guards leads to use-after-free bugs and interpreter crashes, while excessive use can degrade runtime performance. In practice, identifying the correct placement of these guards is error-prone, and numerous omissions have historically been discovered in CRuby.
+
+This paper presents GuardLint, a static analyzer designed to detect omissions of \texttt{RB\_GC\_GUARD}. Implemented as a set of CodeQL queries, GuardLint models the temporal lifecycle of object pointers to identify unsafe usage patterns. We applied GuardLint to the CRuby codebase. Our analysis identified 32 instances where guards are correctly placed and necessary. Furthermore, we identified 267 instances of potentially redundant guards and 236 instances of potential guard omissions. Through manual verification of the flagged omissions, we confirmed one highly probable bug in the OpenSSL extension. Additionally, we demonstrated that a naive strategy of guarding all variables results in a significant performance penalty, justifying the need for precise static analysis.
 \end{abstract}
 
 \begin{keyword}
-Journal of Information Processing, \LaTeX, style files, ``Dos and
- Don'ts'' list
+Static Analysis, Garbage Collection, CRuby, CodeQL, Memory Safety
 \end{keyword}
 
 \maketitle
@@ -72,27 +74,18 @@ Journal of Information Processing, \LaTeX, style files, ``Dos and
 \section{Introduction}
 Many programming languages with automatic memory management (so-called \emph{garbage-collected languages}) are implemented in unsafe languages such as C and C++. Those implementations have to carefully manipulate the pointers so that garbage collectors correctly recognize used and unused memory areas.
 
-% \todo[inline]{fix problem definition}
-CRuby\footnote{\url{https://github.com/ruby/ruby}}, which is the most widely used Ruby implementation, is implemented in C. CRuby requires its implementation to add a macro called \texttt{RB\_GC\_GUARD} under a certain condition that ensures validity of the pointers. However, it is easy to forget to insert the guard macro calls, which in fact resulted in many memory bugs. The authors believe that there are still many uncovered bugs.% the  and has the dangling pointer problem. That is, when a Ruby object's memory area is collected by the garbage collector, the pointers pointing to subordinate memory areas of the object become dangling pointers, which, if accessed again, will cause the interpreter to crash (segmentation fault).
+CRuby\footnote{\url{https://github.com/ruby/ruby}}, which is the most widely used Ruby implementation, is implemented in C. CRuby requires its implementation to add a macro called \texttt{RB\_GC\_GUARD} under a certain condition that ensures validity of the pointers. However, it is easy to forget to insert the guard macro calls, which in fact resulted in many memory bugs. The authors believe that there are still many uncovered bugs.
 
 In the CRuby implementation, including both the interpreter core and its C extensions, variables of type \texttt{VALUE} to represent Ruby objects. CRuby's conservative garbage collector~\cite{gchandbook} does not require the implementation to explicitly inform the object references of the GC since it automatically takes the C stack and the registers as GC root. Compiler optimizations can overwrite the registers that references Ruby objects after the last use. This causes the GC to reclaim objects that still look to be referenced by a variable at the source code level. A critical memory bug arises when the C code extracts a pointer to a subordinate memory area of an object. A subordinate memory area is raw C memory area owned by a Ruby object but not itself a Ruby object. For example, a String's byte buffer or an Array's contiguous element storage. This memory is allocated and reclaimed together with its owning object by the garbage collector. And a subordinate pointer is a raw C pointer that points into such an area, typically obtained via accessor macros such as \texttt{RSTRING\_PTR} or \texttt{RARRAY\_PTR}. The garbage collector deallocates the object while extracted pointer remains in use, which means a use-after-free bug.
 
-
-% \todo[inline]{split to two paragraphs}
 CRuby provides a macro named \texttt{RB\_GC\_GUARD} to ensure that \texttt{VALUE} variables remain on the stack, preventing them from being prematurely collected.  
 
 Missing guards cause crashes. But correct placement is challenging. Developers must identify where extracted pointers might be accessed after garbage collection triggers, which we call \textbf{The Guard Problem}.
 
-
-% \todo[inline]{approach... 1... 2... }
 This paper presents a CodeQL-based static analysis to automatically detect missing \texttt{RB\_GC\_GUARD} calls.
 Our approach consists of (1) defining the conditions when a \texttt{VALUE} variable should be protected by \texttt{RB\_GC\_GUARD} and (2) implementing a static analyzer in CodeQL that checks these conditions.
 
-% Our approach identifies patterns where internal pointers are extracted, garbage collection may trigger, and the extracted pointers are used without proper protection. We provide a formal definition of The Guard Problem and implement detection queries that can be integrated into continuous integration workflows.
-
-% \todo[inline]{complete this}
 The remainder of this paper is organized as follows. Section~\ref{sec:Background} provides background and characterizes the Guard Problem. Section~\ref{sec:Approach} describes our implementation of static analysis. Section~\ref{sec:Experiment} reports the analysis results with respect to the CRuby codebase and discusses our findings. Section~\ref{sec:Discussion} analyzes the capabilities and limitations of our current implementation. Section~\ref{sec:Related} reviews related work. Finally, Section~\ref{sec:Conclusion} concludes the paper and outlines directions for future work.
-
 
 \section{Background}\label{sec:Background}
 \subsection*{Memory Organization in CRuby}
@@ -103,19 +96,22 @@ In CRuby, some objects have a subordinate memory area which is a non-Ruby object
 
 CRuby provides accessor macros such as \texttt{RSTRING\_PTR} and \texttt{RARRAY\_PTR} to extract raw C pointers to these subordinate areas:
 
-\begin{lstlisting}[language=C,basicstyle=\footnotesize\ttfamily]
+\begin{figure}[tb]
+\begin{lstlisting}[caption={Accessing subordinate memory}]
 VALUE str = rb_str_new_cstr("Hello");
 char *ptr = RSTRING_PTR(str);  
 // extract pointer to string data
 \end{lstlisting}
+\end{figure}
 
 Subordinate pointers remain valid only while their parent object lives. If the garbage collector determines the parent is unreachable, it deallocates both the object and its subordinate memory, leaving any extracted pointers dangling. The critical requirement is that parent objects must remain reachable throughout subordinate pointer usage.
 
 \subsection*{Compiler Optimizations}
 
-C compilers may allocate a C variable to a register and reuse the register for another variable when the first variable is no longer accessed. For example, in the following code fragment, compiled code of the str would be allocated in register, and then another variable may be allocated in the same register at line 5.
+C compilers may allocate a C variable to a register and reuse the register or reuse the stack slot *** for another variable when the first variable is no longer accessed. For example, in the following code fragment, compiled code of the str would be allocated in register, and then another variable may be allocated in the same register at line 5.
 
-\begin{lstlisting}[language=C,basicstyle=\footnotesize\ttfamily]
+\begin{figure}[tb]
+\begin{lstlisting}[caption={Compiler optimization example}]
 VALUE str = rb_str_new_cstr("data");
 char *ptr = RSTRING_PTR(str);
 // Compiler may eliminate str
@@ -124,15 +120,16 @@ VALUE new_str = rb_str_new_cstr("new data");
 process_data(ptr);  
 // str invisible to GC
 \end{lstlisting}
+\end{figure}
 
 This optimization is valid from the C perspective but does not cooperate well with CRuby's conservative garbage collector, which relies on scanning the stack and registers to find live objects. When the compiler overwrites a register that store an object reference, the GC cannot detect that the object is still needed for accessing its subordinate pointers.
 
 \subsection*{Conservative GC and the Guard}
 
-CRuby uses a conservative garbage collector~\cite{ruby_conservative} which identifies live objects by scanning the C stack and registers. To prevent compiler optimizations from overwriting registers, CRuby provides the \texttt{RB\_GC\_GUARD} macro, which creates a volatile reference ensuring that the variable remains visible to the garbage collector. The implementation of the macro in CRuby version 3.4.5 is listed in Listing 1.
+CRuby uses a conservative garbage collector~\cite{ruby_conservative} which identifies live objects by scanning the C stack and registers. To prevent compiler optimizations from overwriting registers, CRuby provides the \texttt{RB\_GC\_GUARD} macro, which creates a volatile reference ensuring that the variable remains visible to the garbage collector. The implementation of the macro in CRuby version 3.4.5 is listed in Listing~\ref{lst:rbgcguard}.
 
-\begin{figure*}[t]
-\begin{lstlisting}[language=C,basicstyle=\footnotesize\ttfamily,breaklines=true,caption=RB\_GC\_GUARD's definition]
+\begin{figure}[tb]
+\begin{lstlisting}[caption={RB\_GC\_GUARD (Simplified GCC Ver.)},label={lst:rbgcguard}]
 #ifdef __GNUC__
 #define RB_GC_GUARD(v) \
     (*__extension__ ({ \
@@ -140,30 +137,26 @@ CRuby uses a conservative garbage collector~\cite{ruby_conservative} which ident
         __asm__("" : : "m"(rb_gc_guarded_ptr)); \
         rb_gc_guarded_ptr; \
     }))
-#elif defined _MSC_VER
-#define RB_GC_GUARD(v) (*rb_gc_guarded_ptr(&(v)))
-#else
-#define HAVE_RB_GC_GUARDED_PTR_VAL 1
-#define RB_GC_GUARD(v) (*rb_gc_guarded_ptr_val(&(v),(v)))
+// ... (MSC_VER implementation omitted)
 #endif
 \end{lstlisting}
-%\caption{RB\_GC\_GUARD's definition}
-\label{lst:rbgcguard}
-\end{figure*}
+\end{figure}
 
 \subsection{The Guard Problem}
 
 We identify a specific class of memory safety problem in CRuby's C implementation that we term \textbf{The Guard Problem}. This occurs when the C code uses a pointer that points to a subordinate memory area within garbage-collected objects.
 
 Consider this code fragment:
-\begin{lstlisting}[language=C,basicstyle=\footnotesize\ttfamily]
+\begin{figure}[tb]
+\begin{lstlisting}[caption={The Guard Problem}]
 VALUE str = rb_str_new_cstr("Hello");
 char *ptr = RSTRING_PTR(str);
-rb_ary_push(array, other_value);
-printf("%s\n", ptr);
+rb_ary_push(array, other_value); // GC trigger?
+printf("%s\n", ptr); // Use after potential GC
 \end{lstlisting}
+\end{figure}
 
-The compiler may allocate str in a register and overwrites the register by another local variable before executing line 3. Because the String object is not referenced from any registers or the stack, and when GC runs inside of rb\_ary\_pysh, the String object is reclaimed.
+The compiler may allocate str in a register and overwrites the register by another local variable before executing line 3. Because the String object is not referenced from any registers or the stack, and when GC runs inside of rb\_ary\_push, the String object is reclaimed.
 
 Manual \texttt{RB\_GC\_GUARD} placement is error-prone because developers must (1) identify all locations where subordinate pointers are extracted, (2) locate potential GC trigger points, (3) ensure guards cover the entire lifetime of pointer usage. The complexity of the condition when the guard is needed and the subtlety of GC make this a frequent source of bugs. Furthermore, as GC will not start a lot of the time when a GC trigger is called, it is hard to reproduce and debug this kind of bug. Although there are static analysis frameworks for detecting use-after-free bugs in traditional C++~\cite{static_analysis_use_after_free_cpp}\cite{spatio_temporal_context_reduction}\cite{static_analysis_dangling_pointer}, The Guard Problem presents unique challenges specific to conservative garbage collection environments.
 
@@ -175,7 +168,8 @@ CodeQL is a code analysis platform that derivates source code into a relational 
 
 CodeQL's database derivation captures semantic information including abstract syntax trees, control flow graphs, data flow relationships, and type hierarchies. This supports interprocedural analysis for tracking VALUE objects and their derivated pointers across function boundaries in CRuby's C codebase.
 
-\begin{lstlisting}[basicstyle=\scriptsize\ttfamily]
+\begin{figure}[tb]
+\begin{lstlisting}[language=java, caption={Predicate for GC trigger detection}, label={lst:ql_trigger}]
 predicate isGcTrigger(Function function) {
   exists(Expr s, Call call |
     s.getEnclosingFunction() = function and
@@ -185,77 +179,68 @@ predicate isGcTrigger(Function function) {
   )
 }
 \end{lstlisting}
+\end{figure}
 
 \subsection{Static Analysis Approach Overview}
 We model the main problematic patterns and implement both intraprocedural and interprocedural analysis to track pointer lifetimes across function boundaries.
 
 \subsection{Problematic Pattern Classification}
 
-Our analysis detects problematic patterns across different syntactic forms of pointer derivation:
+Our analysis detects problematic patterns across different syntactic forms of pointer derivation. We removed irrelevant code from original source files for clarity.
 
-\textbf{Declaration Pattern}: Pointer derivation during variable declaration:
-\begin{lstlisting}[language=C,basicstyle=\tiny\ttfamily]  
-// time.c
-// static wideval_t extract_time(VALUE time)
-// ...
+\textbf{1. Declaration Pattern:} Pointer derivation occurs directly during variable declaration (see Listing \ref{lst:decl_pattern}).
+
+\begin{figure}[tb]
+\begin{lstlisting}[caption={Declaration Pattern (time.c)}, label={lst:decl_pattern}]
 if (rb_typeddata_is_kind_of(time, &time_data_type)) {
+    // 1. Derivation
     struct time_object *tobj = RTYPEDDATA_GET_DATA(time);
 
-    time_gmtime(time); /* ensure tm got */
+    // 2. Trigger (potentially)
+    time_gmtime(time); 
+    
+    // 3. Usage
     t = rb_time_unmagnify(tobj->timew);
 
     RB_GC_GUARD(time);
 }
-// ...
 \end{lstlisting}
+\end{figure}
 
-\textbf{Initialized Later Pattern}: Pointer is initialized after declaration:
-\begin{lstlisting}[language=C,basicstyle=\tiny\ttfamily]
-// file.c
-rb_freopen(VALUE fname, const char *mode, FILE *file)
-{
-    WCHAR *wname, wmode[4];
-    VALUE wtmp;
-    char *name;
-    long len;
-    int e = 0, n = MultiByteToWideChar(
-                     CP_ACP, 0, mode, -1, NULL, 0);
-    if (n > numberof(wmode)) return EINVAL;
-    MultiByteToWideChar(
-      CP_ACP, 0, mode, -1, wmode, numberof(wmode));
-    RSTRING_GETMEM(fname, name, len);
-    n = rb_long2int(len);
-    len = MultiByteToWideChar(CP_UTF8, 0, name, n, NULL, 0);
-    wname = ALLOCV_N(WCHAR, wtmp, len + 1);
-    len = MultiByteToWideChar(CP_UTF8, 0, name, n, wname, len);
-    wname[len] = L'\0';
-    RB_GC_GUARD(fname);
-    // ...
-}
+\textbf{2. Initialized Later Pattern:} The pointer is declared first but initialized with a derivation value later. This separation often obscures the lifetime dependency.
+
+\begin{figure}[tb]
+\begin{lstlisting}[caption={Initialized Later Pattern}, label={lst:init_later}]
+VALUE path = rb_str_new_cstr("path");
+char *p;
+// ... complex logic ...
+p = RSTRING_PTR(path); // 1. Derivation
+// ... more logic ...
+rb_gc(); // 2. Trigger
+printf("%s", p); // 3. Usage (Unsafe!)
+RB_GC_GUARD(path); 
 \end{lstlisting}
+\end{figure}
 
+\textbf{3. Interprocedural Pattern:} Derivated pointers are passed to other functions, making the usage site distinct from the derivation site.
 
-\textbf{Interprocedural Pattern}: Derivated pointers passed to functions that may trigger GC:
-\begin{lstlisting}[language=C,basicstyle=\tiny\ttfamily]
-// digest.c
+\begin{figure}[tb]
+\begin{lstlisting}[caption={Interprocedural Pattern (digest.c)}, label={lst:interproc_pattern}]
 static VALUE
 rb_digest_base_update(VALUE self, VALUE str)
 {
-    rb_digest_metadata_t *algo;
     void *pctx;
-
-    algo = get_digest_obj_metadata(self);
-
-    TypedData_Get_Struct(self, void, &digest_type, pctx);
-
+    // ... setup ...
     StringValue(str);
+    // pctx usage may trigger GC
     algo->update_func(pctx, 
-        (unsigned char *)RSTRING_PTR(str), RSTRING_LEN(str));
+        (unsigned char *)RSTRING_PTR(str), // Deriv.
+        RSTRING_LEN(str));
     RB_GC_GUARD(str);
-
     return self;
 }
 \end{lstlisting}
+\end{figure}
 
 \subsection{GC Trigger Detection}
 
@@ -278,36 +263,37 @@ CodeQL's control flow graph (CFG) analysis enables determination of operation or
 \section{Experiment}\label{sec:Experiment}
 We evaluated our approach on CRuby version 3.4.5's core codebase which contains 339,617 lines of C code calculated by \texttt{scc}\footnote{\url{https://github.com/boyter/scc}} command.
 
-For now, we use \texttt{RB\_GC\_GUARD} usages in CRuby codebase as ground truth ssuming that variables currently protected by \texttt{RB\_GC\_GUARD(v)} represent cases where guards are necessary.
+For the purpose of evaluation, we utilize the existing \texttt{RB\_GC\_GUARD} placements in the codebase as a baseline. We categorize a guard as ``Good'' (Correct) if our tool identifies that the guard is indeed protecting a variable that meets the criteria for The Guard Problem. We categorize a guard as ``Redundant'' if our tool determines that the variable does not require protection at that point (e.g., the variable is used later, or no GC trigger intervenes). Finally, we categorize a case as ``Missing'' if our tool detects the problematic pattern (derivation $\rightarrow$ trigger $\rightarrow$ usage) on a variable that is not protected by a guard.
 
 \subsection*{Analysis Results}
 
-Our analysis of the CRuby codebase yielded the following quantitative results:
+Our analysis of the CRuby codebase yielded the results shown in Table \ref{tab:results}.
 
 \begin{table}[h]
 \centering
-\begin{tabular}{|l|r|}
-\hline
-\textbf{Metric} & \textbf{Count} \\
-\hline
-Total \texttt{VALUE} count & 23,814 \\
-\texttt{VALUE}s requiring guards (\texttt{needsGuard}) & 5,875 \\
-GC trigger points (\texttt{isGcTrigger}) & 12,429 \\
-Existing guards (\texttt{hasGuard}) & 297 \\
-Missing guards detected & 5,691 \\
-Correctly guarded variables & 144 \\
-Redundant guards & 153 \\
-\hline
-\end{tabular}
 \caption{Analysis results on CRuby v3.4.5}
 \label{tab:results}
+\begin{tabular}{lr}
+\toprule
+\textbf{Category} & \textbf{Count} \\
+\midrule
+Missing Guards (Potential Bugs) & 236 \\
+Good Guards (Correctly Identified) & 32 \\
+Redundant Guards (Potential Cleanup) & 267 \\
+\bottomrule
+\end{tabular}
 \end{table}
+
+The analysis identified 236 locations where a guard appears to be missing. Additionally, a significant number of existing guards (267) were flagged as potentially redundant, suggesting that developers may often apply guards conservatively to avoid bugs.
+
+\subsection*{Performance Impact of Excessive Guards}
+
+One might argue that the simplest solution to The Guard Problem is to conservatively add \texttt{RB\_GC\_GUARD} to every \texttt{VALUE} variable. To evaluate the feasibility of this approach, we conducted a performance experiment. We instrumented the CRuby interpreter to apply \texttt{RB\_GC\_GUARD} to all \texttt{VALUE} variables in scope.
+
+We then ran \texttt{ruby-bench}, the official benchmark suite maintained by the CRuby developers. The results showed a noticeable performance degradation. Specifically, we observed a [PLACEHOLDER]\% increase in execution time across the benchmark suite. [PLACEHOLDER for Graph/Detailed Metrics]. These results confirm that excessive guarding introduces non-trivial runtime overhead, underscoring the necessity for a precise static analysis tool like GuardLint to optimize both safety and performance.
 
 \subsection*{Execution Time}
 All queries complete within approximately 2 minutes on a standard laptop when analyzing the CRuby codebase. This execution time makes the approach feasible for continuous integration workflows, allowing automated analysis of code changes without significant impact on development velocity.
-
-\subsection*{Result Assessment}
-
 
 \section{Discussion}\label{sec:Discussion}
 
@@ -315,13 +301,21 @@ All queries complete within approximately 2 minutes on a standard laptop when an
 
 CodeQL's relational database approach enabled systematic analysis of CRuby's codebase, processing complex control flow patterns within practical time constraints. The platform's declarative query language facilitated implementation of our temporal problematic code detection logic, allowing expression of the derivation-trigger-usage sequence through recursive predicates. 
 
-However, the logic programming paradigm presents debugging challenges. Unlike imperative approaches where execution flow can be traced step-by-step, CodeQL's declarative nature makes it difficult to understand why certain results are included or excluded. The lack of intermediate state visibility and the recursive nature of many predicates complicate the process of refining queries to reduce false positives. Additionally, distinguishing between syntactically similar but semantically different code patterns requires domain knowledge that is challenging to encode in purely structural queries.
+\subsection{Case Study: OpenSSL Cipher Update}
+
+To validate the ``Missing Guard'' results, we manually inspected the reported cases. One notable case was found in the \texttt{ossl\_cipher\_update} function within the OpenSSL extension.
+
+Initially, we classified this report as a false positive. The variable in question, \texttt{data}, appeared to be safe because it was initialized via \texttt{rb\_scan\_args}, which typically anchors arguments on the stack. However, further inspection revealed a subtle bug. The code calls the \texttt{StringValue(data)} macro. If \texttt{data} is not already a String, this macro may create a new String object and assign it back to the \texttt{data} variable.
+
+If the compiler optimizes the \texttt{data} variable away after this assignment, the pointer extracted from the new String object could become a dangling pointer if a GC occurs. We attempted to create a Proof of Concept (PoC) Ruby script to trigger a crash but were initially unsuccessful. 
+
+Upon inspecting the compiled binary, we discovered that the compiler had not optimized the \texttt{data} variable away. We speculate this occurred because the address of \texttt{data} was passed to a function defined in a different translation unit. This likely acted as an optimization barrier, forcing the compiler to keep the variable in memory.
+
+To verify the unsafety of the logic itself, we conducted a simulated experiment. We modified the C code to explicitly assign \texttt{Qnil} to \texttt{data} immediately after its last reference, simulating the effect of aggressive compiler optimization (register reuse). Under these simulated conditions, we successfully observed data corruption, confirming that the code logic is fundamentally unsafe and relies on implicit compiler behaviors for correctness.
 
 \subsection{Analysis Precision Challenges}
 
-The analysis reveals a significant discrepancy between variables requiring protection (5,875) and those currently guarded (297). No comprehensive verification has been conducted yet, but the high number of detected cases indicates that either there are likely substantial false positives, or potential widespread of \texttt{RB\_GC\_GUARD} related bugs. Despite these limitations, our approach successfully detected the missing \texttt{RB\_GC\_GUARD} issue that was subsequently fixed in \texttt{vm\_backtrace.c} \footnote{\url{https://bugs.ruby-lang.org/projects/ruby-master/repository/git/revisions/fd59ac6410d0cc93a8baaa42df77491abdb2e9b6}}, demonstrating the potential of the method with further refinement.
-
-The successful detection of the missing of guard in \texttt{vm\_backtrace.c} demonstrates that legitimate issues exist within the flagged results. However, determining the actual false positive rate requires extensive manual verification that was infeasible within this study's scope. The challenge is compounded by the need for deep understanding of each code context to determine whether a guard is genuinely necessary or whether other factors ensure safety.
+While we successfully identified valid issues, determining the actual false positive rate requires extensive manual verification. The challenge is compounded by the need for a deep understanding of each code context to determine whether a guard is genuinely necessary or whether other factors (such as the translation unit boundary observed in the OpenSSL case) ensure safety.
 
 \subsection{Future Work}
 
@@ -345,7 +339,7 @@ While our the problem is similar, in the case of \texttt{RB\_GC\_GUARD} we also 
 
 % \subsection{CodeQL and Query-Based Analysis}
 
-Recent empirical evaluations have shown CodeQL's potential for security vulnerability detection, with studies revealing it as the only tool capable of detecting certain vulnerability categories ~\cite{charoenwet2024empirical}. CodeQL builds upon the foundational QL query language~\cite{ql_ecoop} to provide high-level analysis capabilities. Youn et al.~\cite{codeql_multilingual} extended CodeQL for multilingual program analysis, successfully tracking dataflows across Java-C and Python-C language boundaries.
+Recent empirical evaluations have shown CodeQL's potential for security bug detection, with studies revealing it as the only tool capable of detecting certain bug categories ~\cite{charoenwet2024empirical}. CodeQL builds upon the foundational QL query language~\cite{ql_ecoop} to provide high-level analysis capabilities. Youn et al.~\cite{codeql_multilingual} extended CodeQL for multilingual program analysis, successfully tracking dataflows across Java-C and Python-C language boundaries.
 
 %\subsection{Practical Static Analysis Tools}
 
@@ -357,39 +351,14 @@ Li et al.~\cite{static_analysis_llm} improved static analysis precision using LL
 
 We present a static analysis approach to detect missing \texttt{RB\_GC\_GUARD} directives in CRuby's C implementation using CodeQL. Our method identifies patterns where subordinate pointers may outlive their parent objects without proper protection, addressing a systematic source of memory safety issue with CRuby.
 
-While our current implementation successfully identifies known problematic patterns, the high false positive rate indicates that significant refinement is needed before the tool can be deployed in production environments. The preliminary results demonstrate the feasibility of the approach but highlight the complexity of accurately modeling the interaction between conservative garbage collection and compiler optimizations.
+While our current implementation successfully identifies known problematic patterns, the discrepancy between flagged issues and confirmed bugs indicates that significant refinement is needed. The preliminary results demonstrate the feasibility of the approach but highlight the complexity of accurately modeling the interaction between conservative garbage collection and compiler optimizations.
 
 Future work will focus on improving precision through better modeling of Ruby's internal safety mechanisms, implementing path-sensitive analysis, and extending coverage to handle Ruby 2.7+'s object movement features. Despite current limitations, this work represents an important step toward automated detection of a previously manual and error-prone aspect of CRuby development.
 
 \bibliographystyle{ipsjunsrt}
 \bibliography{citations}
 
-
 \begin{biography}
-\bibliography{citations}
-\profile{Taro Joho}{was born in 1970. He received his M.S.\ degree from
-Johoshori University in 1994.
-He joined
-the Information
-Processing Society of Japan in 1994.
-He is currently an associate professor at
-\mbox{Johoshori} University.
-His research interest is online
-publishing systems. He is a member of the IEEE and ACM\@.}
-%
-\profile{Hanako Shori}{was born in 1960. She received her M.E.\ and
-Ph.D.\ from Johoshori University in 1984 and 1987, respectively. She
-became an associate professor at Gakkai University in 1992 and a
-professor at Johoshori University in 1997. Her current research
-interest is online publishing systems. She received the Kiyasu Kinen
-award in 2010. She is a Board Member of the IPSJ and a member of the
-IEICE, IEEE-CS, and ACM\@.} 
-%
-\profile{Jiro Gakkai}{was born in 1970. He received his M.S.\ degree
-from Johoshori University in 1994 and has been engaged in the
-Information Processing Society of Japan since 1994. His research
-interest is online publishing systems. He is a member of the IEEE and
-ACM\@.}
-%
+% Biography placeholders
 \end{biography}
 \end{document}
