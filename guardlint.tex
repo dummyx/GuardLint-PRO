@@ -290,7 +290,16 @@ The analysis identified 236 locations where a guard appears to be missing. Addit
 
 One might argue that the simplest solution to The Guard Problem is to conservatively add \texttt{RB\_GC\_GUARD} to every \texttt{VALUE} variable. To evaluate the feasibility of this approach, we conducted a performance experiment. We instrumented the CRuby interpreter to apply \texttt{RB\_GC\_GUARD} to all \texttt{VALUE} variables in scope.
 
-We then ran \texttt{ruby-bench}, the official benchmark suite maintained by the CRuby developers. The results showed a noticeable performance degradation. Specifically, we observed a [PLACEHOLDER]\% increase in execution time across the benchmark suite. [PLACEHOLDER for Graph/Detailed Metrics]. These results confirm that excessive guarding introduces non-trivial runtime overhead, underscoring the necessity for a precise static analysis tool like GuardLint to optimize both safety and performance.
+We then ran \texttt{ruby-bench}, the official benchmark suite maintained by the CRuby developers. The results showed a mixed performance impact. Specifically, we observed a geometric mean performance difference of -3.27\% across the benchmark suite. The maximum slowdown was 3.17\% observed in the 'fluentd' benchmark, while the minimum slowdown (speedup) was -7.60\% in the 'blurhash' benchmark. Figure \ref{fig:benchmark_comparison} details the results.
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=\linewidth]{benchmark_comparison.pdf}
+\caption{Performance overhead of guarding all VALUEs relative to the original CRuby (positive values indicate slowdown).}
+\label{fig:benchmark_comparison}
+\end{figure}
+
+These results indicate that while the average runtime cost of guards may be low or even beneficial due to secondary effects (e.g., code layout changes), the performance impact is variable. More importantly, indiscriminate guarding obscures code intent and does not guarantee correctness if guards are placed incorrectly (e.g. too early). Thus, a precise static analysis tool like GuardLint is essential to ensure safety with minimal code intrusion.
 
 \subsection*{Execution Time}
 All queries complete within approximately 2 minutes on a standard laptop when analyzing the CRuby codebase. This execution time makes the approach feasible for continuous integration workflows, allowing automated analysis of code changes without significant impact on development velocity.
