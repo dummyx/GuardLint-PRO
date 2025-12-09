@@ -292,12 +292,12 @@ One might argue that the simplest solution to The Guard Problem is to conservati
 
 We then ran \texttt{ruby-bench}, the official benchmark suite maintained by the CRuby developers. The results showed a mixed performance impact. Specifically, we observed a geometric mean performance difference of -3.27\% across the benchmark suite. The maximum slowdown was 3.17\% observed in the 'fluentd' benchmark, while the minimum slowdown (speedup) was -7.60\% in the 'blurhash' benchmark. Figure \ref{fig:benchmark_comparison} details the results.
 
-\begin{figure}[h]
+\begin{figure*}[t]
 \centering
-\includegraphics[width=\linewidth]{benchmark_comparison.pdf}
+\includegraphics[width=0.75\textwidth]{benchmark_comparison.pdf}
 \caption{Performance overhead of guarding all VALUEs relative to the original CRuby (positive values indicate slowdown).}
 \label{fig:benchmark_comparison}
-\end{figure}
+\end{figure*}
 
 These results indicate that while the average runtime cost of guards may be low or even beneficial due to secondary effects (e.g., code layout changes), the performance impact is variable. More importantly, indiscriminate guarding obscures code intent and does not guarantee correctness if guards are placed incorrectly (e.g. too early). Thus, a precise static analysis tool like GuardLint is essential to ensure safety with minimal code intrusion.
 
