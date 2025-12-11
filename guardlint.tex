@@ -121,7 +121,7 @@ Two common optimization families contribute to the Guard Problem:
 \end{description}
 
 \subsection{Conservative Stack Scanning}
-CRuby uses conservative scanning for native-stack roots~\cite{ruby_conservative}. Under this strategy, whether a Ruby object is retained depends on whether some machine-state location still contains a bit pattern that looks like a pointer to the object. If an optimizing compiler shortens the lifetime of the owning \texttt{VALUE} and reuses its storage, the object may become invisible to the collector even though subordinate pointers into its subordinate memory are still in use.
+CRuby uses conservative scanning for native-stack roots. Under this strategy, whether a Ruby object is retained depends on whether some machine-state location still contains a bit pattern that looks like a pointer to the object. If an optimizing compiler shortens the lifetime of the owning \texttt{VALUE} and reuses its storage, the object may become invisible to the collector even though subordinate pointers into its subordinate memory are still in use.
 
 \subsection{Current Workaround}
 To prevent subordinate pointers from outliving their owning \texttt{VALUE} under these optimizations, CRuby exposes the macro \texttt{RB\_GC\_GUARD} as an explicit optimization barrier. \texttt{RB\_GC\_GUARD} is implemented by creating a \texttt{volatile VALUE *} pointing to \texttt{v} and issuing an empty inline assembly statement with a memory constraint, making the access appear as an observable side effect that must not be optimized away or reordered past the guard. A simplified GNU-style implementation of \texttt{RB\_GC\_GUARD} in CRuby is shown in Listing~\ref{lst:rbgcguard}.
@@ -192,7 +192,7 @@ We compare GuardLint's judgments with existing \texttt{RB\_GC\_GUARD} placements
 
 Our analysis yielded the results shown in Table~\ref{tab:results}.
 
-\begin{table}[h]
+\begin{table}[ht]
 \centering
 \caption{Analysis results on CRuby v3.4.5 (under GuardLint's model)}
 \label{tab:results}
@@ -214,7 +214,7 @@ A naive strategy is to add \texttt{RB\_GC\_GUARD} to every \texttt{VALUE} variab
 
 We observed benchmark-dependent effects. In our setup, the geometric mean performance difference was TODO across the suite (positive indicates slowdown), with a maximum slowdown of TODO\%. Figure~\ref{fig:benchmark_comparison} summarizes the results.
 
-\begin{figure}[h]
+\begin{figure}[ht]
 \centering
 \includegraphics[width=\linewidth]{benchmark_comparison.pdf}
 \caption{Performance change from guarding all VALUEs relative to the original CRuby (positive values indicate slowdown).}
