@@ -137,6 +137,30 @@ To prevent subordinate pointers from outliving their owning \texttt{VALUE} under
 \end{lstlisting}
 \end{figure}
 
+\subsubsection*{When the Owning \texttt{VALUE} Gets Optimized Away}
+\texttt{RB\_GC\_GUARD} works by creating a (seemingly) observable use of the \texttt{VALUE} \emph{after} a potential GC trigger, forcing the compiler to keep the variable live until that point. Without such a post-trigger use, an optimizing compiler may treat the \texttt{VALUE} as dead at the trigger and eliminate it from stack/register state, even if the source code still names the variable.
+
+We confirmed this effect by compiling CRuby 3.4.5 with GCC 15.2.1 at \texttt{-O3} and inspecting \texttt{wmap\_foreach\_i} in \texttt{weakmap.c}, which copies two \texttt{VALUE}s (\texttt{k}, \texttt{v}) from a \texttt{weakmap\_entry} and calls a callback that may trigger GC. With \texttt{RB\_GC\_GUARD(v)} present, GCC spills \texttt{v} to a stack slot before the call (so the macro can take \texttt{\&(v)}) and emits a post-call load from that slot. When we remove only \texttt{RB\_GC\_GUARD(v)}, GCC no longer materializes \texttt{v} as a live local across the call: it performs the \texttt{UNDEF\_P} check directly against \texttt{entry->val} and emits no spill or post-call load for \texttt{v}. As a result, during the callback, \texttt{v} need not exist in any conservatively scanned machine-state location, which is precisely the unsafe scenario that guards are meant to prevent.
+
+\begin{figure}[tb]
+\begin{lstlisting}[caption={GCC \texttt{-O3} disassembly excerpt showing how an unguarded \texttt{VALUE} can disappear across a call},label={lst:asm_wmap_foreach_i}]
+; wmap_foreach_i (weakmap.c), x86_64, GCC 15.2.1, -O3
+
+; with RB_GC_GUARD(v):
+mov    rsi, QWORD PTR [rax+0x8]     ; v = entry->val
+mov    QWORD PTR [rsp+0x18], rsi    ; spill v to stack (root)
+call   QWORD PTR [rdx]              ; callback (may trigger GC)
+lea    rdx, [rsp+0x18]              ; &(v) for guard
+mov    QWORD PTR [rsp+0x20], rdx
+mov    rdx, QWORD PTR [rsp+0x18]    ; post-call load via guard
+
+; with RB_GC_GUARD(v) removed:
+cmp    QWORD PTR [rax+0x8], 0x24    ; UNDEF_P(entry->val), v not materialized
+call   QWORD PTR [rdx]              ; callback (may trigger GC)
+; (no spill / no post-call load for v)
+\end{lstlisting}
+\end{figure}
+
 \subsection{Challenges in Debugging}
 Bugs caused by missing guards are difficult to debug because GC timing is non-deterministic. A missing guard creates a \emph{possibility} of use-after-free, but a crash only occurs if a GC cycle is triggered at the vulnerable point \emph{and} the compiler has optimized away the root reference. As a result, code may pass testing for years and fail only under certain build configurations or high memory pressure, making these bugs hard to reproduce and diagnose.
 
