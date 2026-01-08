@@ -13,7 +13,6 @@
 \usepackage{amsmath}
 \usepackage{appendix}
 
-
 % --- FIXED LISTING STYLE ---
 \lstset{
   % language=C,
@@ -65,8 +64,7 @@ Meguro, Tokyo 152--8550, Japan}
 \begin{abstract}
 The reference implementation of Ruby (CRuby) requires developers of the interpreter and its C extensions to explicitly call the garbage-collection guard macro \texttt{RB\_GC\_GUARD} when needed to prevent accidental memory reclamation. Omitting this guard can cause interpreter crashes or data corruption. Adding excessive guards can impact runtime performance. In practice, many omissions have been discovered in CRuby.
 
-This paper presents GuardLint, a static analyzer designed to detect omissions of \texttt{RB\_GC\_GUARD}. It is implemented as CodeQL queries and applied to CRuby's codebase. On CRuby 3.4.5, GuardLint marks 36 existing guards as necessary under our model, reports 265 potentially redundant guards, and flags 232 candidate omissions. Careful reviews of the results confirmed one highly likely omission.
-
+This paper presents GuardLint, a static analyzer designed to detect omissions of \texttt{RB\_GC\_GUARD}. It is implemented as CodeQL queries and applied to CRuby's codebase. On CRuby 3.4.5, GuardLint marks 36 existing guards as necessary under our model, reports 265 potentially redundant guards, and flags 232 candidate omissions. Careful reviews of the results confirmed one highly likely omission; other reports illustrate both brittle patterns and model-driven false positives.
 \end{abstract}
 
 \begin{keyword}
@@ -88,6 +86,11 @@ We present GuardLint, a static analyzer for CRuby that checks GC operations in i
     \item the complicated condition when a GC operation is needed due to the CRuby's conservative GC, ``subordinate memory areas,'' and low-level compiler optimizations (explained in Section~\ref{sec:Background}), and
     \item excessive GC operations (i.e., performing GC operations where they are not needed) can cause performance degradation (Section~\ref{sec:Benchmark}).
 \end{itemize}
+
+\subsection{Contributions}
+This paper makes the following contributions: (i) it characterizes the \texttt{RB\_GC\_GUARD} omission problem in CRuby as an interaction between derived pointers into object-owned memory, conservative native-stack scanning, and compiler lifetime/stack-slot reuse; (ii) it presents GuardLint, a CodeQL-based static analysis that approximates when a guard is needed using pointer-derivation identification, call-graph reachability to GC entry points, and CFG ordering constraints; (iii) it reports an end-to-end evaluation on CRuby v3.4.5, including candidate omissions, potentially redundant guards, and concrete case studies; and (iv) it quantifies the runtime performance cost of indiscriminate guarding to motivate selective insertion and removal.
+
+GuardLint is designed as a review aid rather than a proof system. Its reports are \emph{candidates} under an explicit model: it may miss guard-requiring sites outside the modeled derivation/trigger/use patterns, and it may flag false positives due to conservative over-approximation of triggers and uses. In particular, the current configuration treats passing a derived pointer as a use, but does not fully analyze dereferences performed inside callees; and it relies on a finite, curated set of APIs for pointer derivation. These limitations are discussed in Section~\ref{sec:Discussion}.
 
 In the rest of the paper, we first review CRuby's memory management system, including the GC operation, called \texttt{RB\_GC\_GUARD} (Section~\ref{sec:Background}).  We then present our analyzer's design and implementation (Section~\ref{sec:Approach}). Section~\ref{sec:Experiment} reports the results of the analyzer and additional manual inspection. Section~\ref{sec:Discussion} discusses limitations and future work. Section~\ref{sec:Related} reviews related work. Section~\ref{sec:Conclusion} concludes the paper.
 
@@ -115,13 +118,13 @@ Two common optimization families contribute to the Guard Problem:
   Compilers compute liveness and may treat a variable as dead right after its last use. Consider a sequence where a subordinate pointer \texttt{p} is extracted from a \texttt{VALUE v} (e.g., \texttt{p = RSTRING\_PTR(v)}), followed by a use of \texttt{p} without any further reference to \texttt{v}. If \texttt{v} is not used again, the compiler may end \texttt{v}'s live range at the extraction point. The register allocator may then reuse the register or stack slot that previously held \texttt{v}, making the object unreachable to conservative scanning.
 
 \subsubsection*{Stack Slot Reuse (Stack Coloring / Stack Reuse)}
-  To reduce stack frame size, compilers may reuse stack slots for locals whose live ranges do not overlap. For instance, GCC's \texttt{-fstack-reuse} and LLVM's stack coloring can repurpose a former \texttt{VALUE} slot for unrelated data once the compiler considers the \texttt{VALUE} dead. For a conservative collector, such reuse can make a live Ruby object invisible.
+  To reduce stack frame size, compilers may reuse stack slots for locals whose live ranges do not overlap. For instance, GCC exposes \texttt{-fstack-reuse} to control reuse of stack space for locals and temporaries\cite{gcc_fstack_reuse}, and LLVM implements stack coloring to merge disjoint stack slots\cite{llvm_stack_coloring}. For a conservative collector, such reuse can make a live Ruby object invisible.
 
 \subsection{Conservative Stack Scanning of CRuby's GC}
-CRuby uses conservative scanning for native-stack roots. Under this strategy, whether a Ruby object is retained depends on whether some machine-state location still contains a bit pattern that looks like a pointer to the object. If an optimizing compiler shortens the lifetime of the owning \texttt{VALUE} and reuses its storage, the object may become invisible to the collector even though subordinate pointers into its subordinate memory are still in use.
+CRuby uses conservative scanning for native-stack roots. Under this strategy, whether a Ruby object is retained depends on whether some machine-state location still contains a bit pattern that looks like a pointer to the object. If an optimizing compiler shortens the lifetime of the owning \texttt{VALUE} and reuses its storage, the object may become invisible to the collector even though subordinate pointers into its subordinate memory are still in use\cite{wang2025reworking}.
 
 \subsection{Current Workaround: the \texttt{RB\_GC\_GUARD}}
-To prevent subordinate pointers from outliving their owning \texttt{VALUE} under these optimizations, CRuby exposes the macro \texttt{RB\_GC\_GUARD} as an explicit optimization barrier. \texttt{RB\_GC\_GUARD} is implemented by creating a \texttt{volatile VALUE *} pointing to \texttt{v} and issuing an empty inline assembly statement with a memory constraint, making the access appear as an observable side effect that must not be optimized away or reordered past the guard. A simplified GNU-style implementation of \texttt{RB\_GC\_GUARD} in CRuby is shown in Listing~\ref{lst:rbgcguard}.
+To prevent subordinate pointers from outliving their owning \texttt{VALUE} under these optimizations, CRuby exposes the macro \texttt{RB\_GC\_GUARD} as an explicit optimization barrier. \texttt{RB\_GC\_GUARD} is implemented by creating a \texttt{volatile VALUE *} pointing to \texttt{v} and issuing an empty inline assembly statement with a memory constraint, making the access appear as an observable side effect that must not be optimized away or reordered past the guard. CRuby's documentation recommends \texttt{RB\_GC\_GUARD} over using \texttt{volatile} directly, because the macro localizes the optimization impact to the guard site and can be specialized per compiler/architecture when necessary\cite{ruby_capi_rb_gc_guard}. A simplified GNU-style implementation of \texttt{RB\_GC\_GUARD} in CRuby is shown in Listing~\ref{lst:rbgcguard}.
 
 \begin{figure}[tb]
 \begin{lstlisting}[caption={RB\_GC\_GUARD's Definition},label={lst:rbgcguard}]
@@ -134,6 +137,30 @@ To prevent subordinate pointers from outliving their owning \texttt{VALUE} under
     }))
 // ... (other compiler implementations omitted)
 #endif
+\end{lstlisting}
+\end{figure}
+
+\subsubsection*{When the Owning \texttt{VALUE} Gets Optimized Away}
+\texttt{RB\_GC\_GUARD} works by creating a (seemingly) observable use of the \texttt{VALUE} \emph{after} a potential GC trigger, forcing the compiler to keep the variable live until that point. Without such a post-trigger use, an optimizing compiler may treat the \texttt{VALUE} as dead at the trigger and eliminate it from stack/register state, even if the source code still names the variable.
+
+We confirmed this effect by compiling CRuby 3.4.5 with GCC 15.2.1 at \texttt{-O3} and inspecting \texttt{wmap\_foreach\_i} in \texttt{weakmap.c}, which copies two \texttt{VALUE}s (\texttt{k}, \texttt{v}) from a \texttt{weakmap\_entry} and calls a callback that may trigger GC. With \texttt{RB\_GC\_GUARD(v)} present, GCC spills \texttt{v} to a stack slot before the call (so the macro can take \texttt{\&(v)}) and emits a post-call load from that slot. When we remove only \texttt{RB\_GC\_GUARD(v)}, GCC no longer materializes \texttt{v} as a live local across the call: it performs the \texttt{UNDEF\_P} check directly against \texttt{entry->val} and emits no spill or post-call load for \texttt{v}. As a result, during the callback, \texttt{v} need not exist in any conservatively scanned machine-state location, which is precisely the unsafe scenario that guards are meant to prevent.
+
+\begin{figure}[tb]
+\begin{lstlisting}[caption={GCC \texttt{-O3} disassembly excerpt showing how an unguarded \texttt{VALUE} can disappear across a call},label={lst:asm_wmap_foreach_i}]
+; wmap_foreach_i (weakmap.c), x86_64, GCC 15.2.1, -O3
+
+; with RB_GC_GUARD(v):
+mov    rsi, QWORD PTR [rax+0x8]     ; v = entry->val
+mov    QWORD PTR [rsp+0x18], rsi    ; spill v to stack (root)
+call   QWORD PTR [rdx]              ; callback (may trigger GC)
+lea    rdx, [rsp+0x18]              ; &(v) for guard
+mov    QWORD PTR [rsp+0x20], rdx
+mov    rdx, QWORD PTR [rsp+0x18]    ; post-call load via guard
+
+; with RB_GC_GUARD(v) removed:
+cmp    QWORD PTR [rax+0x8], 0x24    ; UNDEF_P(entry->val), v not materialized
+call   QWORD PTR [rdx]              ; callback (may trigger GC)
+; (no spill / no post-call load for v)
 \end{lstlisting}
 \end{figure}
 
@@ -153,7 +180,6 @@ We observed benchmark-dependent effects. In our setup, the geometric mean perfor
 \end{figure}
 
 These results suggest that indiscriminate guarding can harm the interpreter's performance. This motivates a tool that helps focus review on likely omission sites and highlights candidates for cleanup.
-
 
 \subsection{The Guard Problem}
 
@@ -177,15 +203,28 @@ We implemented GuardLint in CodeQL, which represents code as a queryable databas
 
 GuardLint finds (a) where subordinate pointers are obtained, (b) which calls may trigger GC (via call-graph reachability), and (c) which operations count as uses of a subordinate pointer (including passing it as an argument). GuardLint then reports sites matching the pattern \emph{derivation} $\rightarrow$ \emph{GC-triggering call} $\rightarrow$ \emph{pointer use}, when the owning \texttt{VALUE} is not kept live across the trigger by either a guard or a later \texttt{VALUE}-level access.
 
+\begin{figure}[tb]
+\centering
+\fbox{\parbox{0.95\linewidth}{\small
+\textbf{(1) Extraction:} identify candidate owner \texttt{VALUE}s and derived pointers. \\
+\textbf{(2) Trigger analysis:} compute call sites whose callee can reach \texttt{gc\_enter}. \\
+\textbf{(3) Ordering:} require derivation $\rightarrow$ last \texttt{VALUE}-level use $\rightarrow$ trigger $\rightarrow$ derived-pointer use on the CFG. \\
+\textbf{(4) Filtering:} suppress when an explicit guard or a post-trigger \texttt{VALUE}-level access keeps the owner live. \\
+\textbf{(5) Reporting:} classify as missing, matched, or potentially redundant under the model.}}
+\caption{GuardLint pipeline at a high level.}
+\label{fig:guardlint_pipeline}
+\end{figure}
+
 \subsection{Identifying \texttt{VALUE}s, Pointer Derivation, and Guards}
 GuardLint first identifies variables of type \texttt{VALUE} as candidate owners of GC-managed objects.
 
 The core hazard arises when a raw pointer is derived from a \texttt{VALUE}. GuardLint models derivations by recognizing common CRuby access patterns (e.g., accessor macros and helper functions) that return pointers to object-owned memory. A derivation site is recorded when the subordinate pointer value is assigned to a pointer variable or otherwise captured for later use. This is necessarily an over-approximation: not all recognized APIs always produce unsafe pointers, and some unsafe derivations may be missed if they are not covered by the modeled set.
 
-GuardLint also models the protection mechanism of \texttt{RB\_GC\_GUARD}. Since it is a macro, GuardLint detects it via a characteristic expansion pattern in the GNU-style implementation used by CRuby: the introduction of a local temporary named \texttt{rb\_gc\_guarded\_ptr} initialized with the address of the guarded \texttt{VALUE}.
+GuardLint also models the protection mechanism of \texttt{RB\_GC\_GUARD}. Since it is a macro, GuardLint can identify it via macro-invocation metadata when available in the CodeQL database\cite{codeql_macroinvocation}. In our current implementation for CRuby, we additionally support detection via a characteristic expansion pattern in the GNU-style implementation used by CRuby: the introduction of a local temporary named \texttt{rb\_gc\_guarded\_ptr} initialized with the address of the guarded \texttt{VALUE}. (This fallback makes the detector robust to preprocessing configurations that hide macro names in the database, at the cost of depending on CRuby's current macro body.)
 
 \subsection{Recursive Checking of GC Triggers}
-To identify calls that may trigger GC, GuardLint marks call sites that can reach the GC entry point \texttt{gc\_enter} in the call graph. This over-approximation captures direct calls as well as calls through helper functions and callbacks. It is achieved using the recursive call ability of CodeQL's predicates as shown in listing ~\ref{lst:is_gc_trigger}. 
+To identify calls that may trigger GC, GuardLint marks call sites that can reach the GC entry point \texttt{gc\_enter} in the call graph. This over-approximation captures direct calls as well as calls through helper functions and callbacks. It is achieved using the recursive call ability of CodeQL's predicates\cite{codeql_recursion} as shown in listing ~\ref{lst:is_gc_trigger}. 
+
 \begin{lstlisting}[label=lst:is_gc_trigger]
 predicate isGcTrigger(Function function) {
   exists(Expr s, Call call |
@@ -197,11 +236,15 @@ predicate isGcTrigger(Function function) {
 }
 \end{lstlisting}
 
+For presentation, we can restate the above as follows: a call site is a modeled GC-trigger if its statically known callee is in the transitive closure of the call graph rooted at \texttt{gc\_enter}. This is a may-trigger approximation: it intentionally errs on the side of reporting candidates.
+
 \subsection{Ordering Constraints}
- We model this using a ordering constraint: the last use of the owning variable $v$ must occur before the trigger, while the use of the subordinate pointer $p$ must occur after it:
+ We model this using an ordering constraint: the last use of the owning variable $v$ must occur before the trigger, while the use of the subordinate pointer $p$ must occur after it:
 \[
 \textsc{Derivation}(p \leftarrow v) \xrightarrow{CFG^*} \textsc{LastUse}(v) \xrightarrow{CFG^+} \textsc{Trigger} \xrightarrow{CFG^+} \textsc{Use}(p)
 \]
+
+In GuardLint, \textsc{LastUse} is computed as the last \emph{syntactic} \texttt{VALUE}-level access to $v$ along a control-flow path as represented in the CodeQL CFG (i.e., the last point at which $v$ is read, written, or passed as a \texttt{VALUE}); and \textsc{Use} includes both dereferences/operations on $p$ and passing $p$ as an argument. The CFG reachability uses CodeQL's control-flow relations (e.g., predecessor/successor relations between control-flow nodes)\cite{codeql_cpp_getapredecessor}. Because the CFG represents one possible evaluation order out of those allowed by the language and compiler, the analysis remains a conservative approximation rather than a compiler-precise liveness proof.
 
 A \texttt{VALUE} variable is considered to need guarding when:
 \begin{enumerate}
@@ -227,9 +270,11 @@ select v, innerPointerTaking, gtc,
        pointerUsageAccess
 \end{lstlisting}
 
-
 \section{Experiment}\label{sec:Experiment}
 We evaluated GuardLint on the CRuby codebase tagged \texttt{v3\_4\_5}, which contains 339{,}617 lines of C code as measured by \texttt{scc}\footnote{\url{https://github.com/boyter/scc}}.
+
+\paragraph{Evaluation goals.}
+Our evaluation focuses on two practical questions: (i) whether GuardLint can systematically surface a manageable set of candidates for human review in a large VM codebase, and (ii) whether the model is sufficiently precise to identify at least some actionable findings (both omissions and redundant guards) without requiring intrusive instrumentation or specialized compilers.
 
 To provide context on the scale of the analysis inputs, we also ran auxiliary CodeQL subqueries over the same database to get the some basic metrics shown in ~\ref{tab:codeql_subquery_stats}.
 
@@ -249,12 +294,13 @@ Guarded \texttt{VALUE}s & 301 \\
 \end{tabular}
 \end{table}
 
-
 \subsection{Analysis Time}
-We evaluate the execution time using the same machine as Section~\ref{sec:Benchmark}. On this machine, the full GuardLint query set over the CRuby v3.4.5 CodeQL database completed in approximately 1000~s. This runtime is practical for local use, and it may be suitable for CI integration.
+We evaluated the execution time using the same machine as Section~\ref{sec:Benchmark}. On this machine, the full GuardLint query set over the CRuby v3.4.5 CodeQL database completed in approximately 1000~s. This runtime is practical for local use, and it may be suitable for CI integration.
 
 \subsection{Classification and Summary of Results}
 We compare GuardLint's judgments with existing \texttt{RB\_GC\_GUARD} placements in the codebase as a reference point. We classify an existing guard as \emph{Matched} if the guarded variable satisfies our \texttt{needsGuard} predicate at that program point. We classify it as \emph{Potentially redundant} if the variable does not satisfy \texttt{needsGuard} there (e.g., there is no modeled GC trigger on relevant paths, or the variable is accessed after the trigger). Finally, we report a \emph{Missing} site when a variable satisfies \texttt{needsGuard} but is not detected as guarded.
+
+These labels are defined strictly \emph{under GuardLint's model}: a ``potentially redundant'' report indicates that the specific derived-pointer hazard pattern is absent according to the modeled derivations, triggers, and uses, but it does not by itself prove that the guard is unnecessary for all purposes (e.g., future edits, unmodeled derivations, or defensive coding).
 
 Our analysis yielded the results shown in Table~\ref{tab:results}.
 
@@ -294,7 +340,6 @@ We also confirmed that even with the simulation, if the implicit string conversi
 \subsection{Case Study: \texttt{ruby\_brace\_expand}}
 The \texttt{var} argument in \texttt{ruby\_brace\_expand} (see Appendix~\ref{app:ruby_brace_expand}) was flagged by GuardLint as having a redundant guard. Upon manual inspection, we confirmed that \texttt{var} is treated as an opaque payload throughout the function. While it is passed recursively to child calls, the function never derives a subordinate pointer from it (e.g., via \texttt{RSTRING\_PTR}). Because no raw pointer is extracted from \texttt{var} in this scope, there is no disjoint lifetime to synchronize; even if the compiler determines \texttt{var} is dead after the last recursive call, there is no dangling-pointer hazard. Consequently, the \texttt{RB\_GC\_GUARD(var)} at the end of the function is unnecessary for preserving memory safety in this context.
 
-
 \section{Discussion}\label{sec:Discussion}
 
 \subsection{Limitations}
@@ -306,19 +351,32 @@ Second, some special patterns that require domain knowledge of CRuby's implement
 
 Finally, whether the relevant optimizations occur depends on the build configuration and the stack layout chosen by the compiler. Our simulated experiment in the OpenSSL case illustrates that patterns that appear safe under one configuration can become problematic under a more aggressive one. The analysis therefore surfaces candidates that merit review rather than providing proofs of either safety or unsafety.
 
+\subsection{Threats to Validity}
+\textbf{Construct validity.} GuardLint operationalizes ``needs a guard'' via modeled derivations, modeled trigger reachability, and modeled uses. Any mismatch between these operational definitions and the real conditions under which CRuby becomes unsafe will produce false positives or false negatives. In particular, our trigger analysis is a may-trigger approximation, and our derivation model is incomplete by design.
+
+\textbf{Internal validity.} Case-study conclusions depend on manual reasoning about subtle control-flow and object-lifetime effects, and on the particular stress-style simulation used to approximate aggressive optimization. These checks strengthen confidence, but they do not fully substitute for establishing a concrete miscompilation pattern in a production build.
+
+\textbf{External validity.} The observed counts and findings depend on the specific CRuby revision and the compiler/toolchain configuration. Different compilers, optimization levels, architectures, and link-time optimizations may change when \texttt{RB\_GC\_GUARD} is required in practice. The analysis should therefore be interpreted as surfacing brittle or suspicious patterns that warrant review, not as a compiler-specific guarantee.
+
 \subsection{Future Work}
 We plan to improve GuardLint in three main areas to increase its precision and utility.
 
 First, we aim to better incorporate domain knowledge of CRuby's implementation. Currently, the analyzer does not fully account for specific API patterns, such as argument parsing with \texttt{rb\_scan\_args}, which often implicitly ensure object safety. By encoding these domain-specific rules directly into the query, we can filter out reports where the interpreter's architecture already guarantees memory safety.
 
-Second, we intend to enhance interprocedural analysis. This will allow GuardLint to distinguish.
+Second, we intend to enhance interprocedural analysis. This will allow GuardLint to distinguish cases where a derived pointer is merely passed through from cases where it is dereferenced or stored across GC-triggering calls inside callees, reducing false positives and improving prioritization.
 
 Third, we will improve the modeling of pointer derivation. Currently, the tool relies on a broad approximation to determine when a C pointer depends on a Ruby object. We plan to refine this model to specifically track pointers that reference internal, managed memory.
+
+\subsection{Practical Use}
+GuardLint is intended to support maintainable review workflows. In practice, we expect it to be used in two complementary modes: (i) auditing and refactoring, where developers review potentially redundant guards and remove them where clearly safe; and (ii) regression prevention, where developers run the missing-guard query on changes that touch C code and review newly introduced candidates. Because \texttt{RB\_GC\_GUARD} has nontrivial performance impact (Section~\ref{sec:Benchmark}), selective insertion and removal guided by a static checker can be preferable to indiscriminate guarding.
 
 \section{Related Work}\label{sec:Related}
 Static analysis for memory safety has advanced steadily, with recent work covering more complex scenarios. Multiple approaches have been developed for detecting use-after-free bugs: Teodorescu and Lucanu~\cite{static_analysis_use_after_free_cpp} developed frameworks for detecting use-after-free bugs in C++, Yan et al.~\cite{spatio_temporal_context_reduction} introduced spatio-temporal context reduction techniques for scalable UAF detection in multi-MLOC C code, and Caballero et al.~\cite{static_analysis_dangling_pointer} proposed early detection of dangling pointers. Recent comparative studies~\cite{hassler2025comparativestudyfuzzersstatic} evaluate both static analyzers and fuzzers for finding memory unsafety, showing complementarity across tools. These approaches largely focus on explicit memory management rather than conservative-GC settings where subordinate pointers can outlive visible roots.
 
 Closest to our work is Ugawa and Fujimoto's study on detecting mistakes in registering local variables for precise garbage collection in an embedded JavaScript VM (eJSVM) using Coccinelle's control-flow--based pattern matching~\cite{UgawaFujimoto2019PRO}. While the setting is similar, in the case of \texttt{RB\_GC\_GUARD} we must track both derived-pointer extraction and derived-pointer usage, and we must reason about the absence of \texttt{VALUE}-level accesses after potential trigger points.
+
+\paragraph{Rooting analyses in production VMs.}
+A closely related line of work in industrial language runtimes is static checking of GC rooting hazards. For example, SpiderMonkey (Mozilla's JavaScript engine) runs a ``rooting hazard analysis'' that reports stack-rooting hazards and related GC safety issues, and it is designed to be used both locally and in continuous integration\cite{spidermonkey_hazard_analysis}. While SpiderMonkey's setting differs (moving GC and explicit rooting APIs), the engineering motivation is similar: rooting/guarding mistakes are difficult to test reliably, and targeted static analysis can make these hazards reviewable at scale.
 
 Empirical evaluations have shown CodeQL's potential for security bug detection, with studies revealing it can detect bug categories missed by other tools~\cite{charoenwet2024empirical}. CodeQL builds upon the foundational QL language~\cite{ql_ecoop} to provide high-level analysis capabilities, and has been used as the basis for domain-specific analyzers such as a resource leak checker for C\# code~\cite{resourceleak_csharp_codeql}. Youn et al.~\cite{codeql_multilingual} extended CodeQL for multilingual program analysis, tracking dataflows across language boundaries.
 
