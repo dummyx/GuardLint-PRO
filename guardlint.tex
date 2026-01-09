@@ -87,11 +87,6 @@ We present GuardLint, a static analyzer for CRuby that checks GC operations in i
     \item excessive GC operations (i.e., performing GC operations where they are not needed) can cause performance degradation (Section~\ref{sec:Benchmark}).
 \end{itemize}
 
-\subsection*{Contributions}
-This paper makes the following contributions: (i) it characterizes the \texttt{RB\_GC\_GUARD} omission problem in CRuby as an interaction between derived pointers into object-owned memory, conservative native-stack scanning, and compiler lifetime/stack-slot reuse; (ii) it presents GuardLint, a CodeQL-based static analysis tool; (iii) it reports an end-to-end evaluation on CRuby v3.4.5, including candidate omissions, potentially redundant guards, and case studies; and (iv) it quantifies the runtime performance cost of indiscriminate guarding to motivate selective insertion and removal.
-
-GuardLint is designed as a review aid rather than a proof system. Its reports are \emph{candidates} under an explicit model: it may miss guard-requiring sites outside the modeled derivation/trigger/use patterns, and it may flag false positives due to conservative over-approximation of triggers and uses. In particular, the current configuration treats passing a derived pointer as a use, but does not fully analyze dereferences performed inside callees; and it relies on a finite, curated set of APIs for pointer derivation. These limitations are discussed in Section~\ref{sec:Discussion}.
-
 In the rest of the paper, we first review CRuby's memory management system, including the GC operation, called \texttt{RB\_GC\_GUARD} (Section~\ref{sec:Background}).  We then present our analyzer's design and implementation (Section~\ref{sec:Approach}). Section~\ref{sec:Experiment} reports the results of the analyzer and additional manual inspection. Section~\ref{sec:Discussion} discusses limitations and future work. Section~\ref{sec:Related} reviews related work. Section~\ref{sec:Conclusion} concludes the paper.
 
 \section{Background}\label{sec:Background}
