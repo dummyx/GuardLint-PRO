@@ -1,0 +1,6 @@
+\section{Conclusion}\label{sec:Conclusion}
+We presented GuardLint, a CodeQL-based analysis that flags likely missing \texttt{RB\_GC\_GUARD} directives in CRuby's C code. GuardLint identifies patterns where subordinate pointers into object-owned memory may outlive the visibility of their owning \texttt{VALUE} across GC-triggering calls, which can lead to use-after-free under certain compiler optimizations.
+
+On CRuby 3.4.5, GuardLint reported 232 candidate omissions, 265 potentially redundant guards, and 36 existing guards that appear necessary under our model. While some reports depend on build configuration and conservative modeling choices, the results demonstrate that query-based static analysis can systematically surface locations that merit review.
+
+Future work will focus on improving precision through stronger modeling of pointer derivation operations, deeper interprocedural analysis, and better balancing of precision and scalability. Ultimately, integrating GuardLint into CI workflows could help prevent regressions and improve the robustness of the CRuby ecosystem against this class of memory-safety bugs.

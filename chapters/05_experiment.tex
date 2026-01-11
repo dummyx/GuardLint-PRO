@@ -1,0 +1,63 @@
+\section{Experiment}\label{sec:Experiment}
+We evaluated GuardLint on the CRuby codebase tagged \texttt{v3\_4\_5}, which contains 339{,}617 lines of C code as measured by \texttt{scc}\footnote{\url{https://github.com/boyter/scc}}.
+
+Our evaluation focuses on two practical questions: whether GuardLint can systematically surface a manageable set of candidates for human review in a large VM codebase, and whether the model is sufficiently precise to identify at least some actionable findings (both omissions and redundant guards) without requiring intrusive instrumentation or specialized compilers.
+
+To provide context on the scale of the analysis inputs, we ran auxiliary CodeQL subqueries over the same database to obtain basic metrics shown in Table~\ref{tab:codeql_subquery_stats}.
+
+\begin{table}[ht]
+\centering
+\caption{Summary statistics from CodeQL subqueries on CRuby v3.4.5}
+\label{tab:codeql_subquery_stats}
+\begin{tabular}{lr}
+\toprule
+\textbf{Category} & \textbf{Count} \\
+\midrule
+\texttt{VALUE} variables & 23{,}814 \\
+All functions & 42{,}612 \\
+GC-triggering functions (reachable to \texttt{gc\_enter}) & 10{,}608 \\
+Guarded \texttt{VALUE}s & 301 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Analysis Time}
+We evaluated the execution time on the same machine used for benchmarking (Section~\ref{sec:Benchmark}). The full GuardLint query set over the CRuby v3.4.5 CodeQL database completed in approximately 1000 seconds. This runtime is practical for local use and may be suitable for CI integration.
+
+\subsection{Classification and Summary of Results}
+We compare GuardLint's judgments with existing \texttt{RB\_GC\_GUARD} placements in the codebase as a reference point. We classify an existing guard as \emph{Matched} if the guarded variable satisfies our \texttt{needsGuard} predicate at that program point. We classify it as \emph{Potentially redundant} if the variable does not satisfy \texttt{needsGuard} there (e.g., there is no modeled GC trigger on relevant paths, or the variable is accessed after the trigger). Finally, we report a \emph{Missing} site when a variable satisfies \texttt{needsGuard} but is not detected as guarded.
+
+These labels are defined strictly \emph{under GuardLint's model}: a ``potentially redundant'' report indicates that the specific derived-pointer hazard pattern is absent according to the modeled derivations, triggers, and uses, but it does not by itself prove that the guard is unnecessary for all purposes (e.g., future edits, unmodeled derivations, or defensive coding).
+
+Our analysis yielded the results shown in Table~\ref{tab:results}.
+
+\begin{table}[ht]
+\centering
+\caption{Analysis results on CRuby v3.4.5 (under GuardLint's model)}
+\label{tab:results}
+\begin{tabular}{lr}
+\toprule
+\textbf{Category} & \textbf{Count} \\
+\midrule
+Missing Guards (Candidate Omissions) & 232 \\
+Matched Guards (Existing guards flagged as needed) & 36 \\
+Potentially Redundant Guards & 265 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The analysis flagged 232 locations that match the missing-guard pattern under our current model. Additionally, 265 existing guards were flagged as potentially redundant.
+
+We further classify inspected candidate omissions into three categories. \emph{Reproducible bugs} are cases where the unmodified CRuby build exhibits a crash or data corruption when executing a test case derived from the report. \emph{Highly-likely bugs} are cases where manual inspection indicates that the code may be problematic, and the issue can be triggered by a simulated stress test that approximates aggressive optimization behavior (e.g., explicitly killing the owning \texttt{VALUE} immediately after its last \texttt{VALUE} use). Such patterns may become harmful as compiler optimizations and build configurations evolve. \emph{False positives} are reports attributable to limitations of our model (e.g., over-approximation of pointer derivations, GC triggers, or post-trigger uses), where manual inspection indicates that there is no derived-pointer lifetime that outlives the visibility of the owning \texttt{VALUE}.
+
+\subsection{Case Study: \texttt{ossl\_cipher\_update}}
+Manual inspection of the query results found one highly-likely missing guard in \texttt{ossl\_cipher\_update} in the OpenSSL extension (see Appendix~\ref{app:ossl_cipher_update}). The local variable \texttt{data} is initialized through \texttt{rb\_scan\_args}. This is often safe because the argument value is typically present on the stack due to the calling convention. However, the code then calls \texttt{StringValue(data)}, which may replace \texttt{data} with a new pointer to a new string object, and later executes operations that may trigger GC before the subordinate pointer is fully used.
+
+We did not reproduce a crash on the original CRuby. Under our build configuration, the compiler did not generate code that overwrote the \texttt{data} \texttt{VALUE} in a way that would make it invisible to conservative scanning.
+
+To probe how brittle this pattern is, we ran a simulated experiment where we explicitly assign \texttt{Qnil} to \texttt{data} immediately after its last \texttt{VALUE}-level use. This approximates an aggressive optimization that removes the root. Under this modification we observed data corruption, indicating that the code can rely on implicit compiler behavior for safety. This result does not by itself show an exploitable bug in shipping builds, but it motivates closer review and more robust anchoring where appropriate.
+
+We also confirmed that even with the simulation, if the implicit string conversion (which reassigns the variable) did not occur, such data corruption would not be observed. This supports our hypothesis that, without the reassignment, the pointer was effectively kept live elsewhere (e.g., by the caller's stack frame).
+
+\subsection{Case Study: \texttt{ruby\_brace\_expand}}
+The \texttt{var} argument in \texttt{ruby\_brace\_expand} (see Appendix~\ref{app:ruby_brace_expand}) was flagged by GuardLint as having a redundant guard. Upon manual inspection, we confirmed that \texttt{var} is treated as an opaque payload throughout the function. While it is passed recursively to child calls, the function never derives a subordinate pointer from it (e.g., via \texttt{RSTRING\_PTR}). Because no raw pointer is extracted from \texttt{var} in this scope, there is no disjoint lifetime to synchronize; even if the compiler determines \texttt{var} is dead after the last recursive call, there is no dangling-pointer hazard. Consequently, the \texttt{RB\_GC\_GUARD(var)} at the end of the function is unnecessary for preserving memory safety in this context.

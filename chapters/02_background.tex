@@ -1,0 +1,229 @@
+\section{Background}\label{sec:Background}
+
+This section describes the memory management model and guard mechanism in CRuby. We first explain how Ruby objects own native memory regions and how derived pointers are obtained from them. We then describe the compiler optimizations that can shorten the lifetime of owning references, and CRuby's conservative scanning strategy. Finally, we present the \texttt{RB\_GC\_GUARD} mechanism and discuss why correct placement is both critical and difficult.
+
+\subsection{Object-Owned Memory and Derived Pointers in CRuby}
+Many CRuby objects consist of a small GC-managed ``header'' (the Ruby object itself)
+plus an additional region of native memory that stores the object's payload.  The GC
+tracks the header as a Ruby object, but the payload is typically an untyped byte
+region (or an array of machine words) managed by CRuby's runtime and reclaimed when
+the owning object is reclaimed.  We call such payload regions \emph{object-owned
+memory} (our \emph{subordinate memory areas}).
+
+A \emph{derived pointer} (our \emph{subordinate pointer}) is a raw C pointer that
+points into object-owned memory.  Once derived, it is \emph{not} a Ruby object and
+therefore is not treated as a GC root.  Derived pointers are pervasive in the
+interpreter and in C extensions because they are the conventional way to pass Ruby
+payloads to ``foreign'' code (system calls, cryptography libraries, encoders, etc.).
+However, because they are ordinary C pointers, their validity depends on (i) the
+liveness of the owning Ruby object and (ii) the stability of the payload storage.
+
+\subsubsection*{Strings}
+For strings, the canonical derived-pointer operation is \texttt{RSTRING\_PTR(str)},
+which returns a \texttt{char *} to the string's bytes, and \texttt{RSTRING\_LEN(str)}
+which returns the byte length.  Importantly, Ruby strings are byte sequences and do
+not promise a terminating NUL byte; if a C string is required, extension authors are
+expected to use coercion helpers such as \texttt{StringValueCStr} (which ensures a
+terminating NUL and rejects embedded NULs).%
+\footnote{\url{https://docs.ruby-lang.org/en/3.1/extension_rdoc.html} (see the
+discussion of \texttt{StringValue}, \texttt{StringValuePtr}, and \texttt{StringValueCStr}).}
+
+Internally, CRuby strings may store their bytes either in an embedded area (for
+short strings) or in a separately allocated heap buffer.  \texttt{RSTRING\_PTR}
+selects between these representations (simplified in Listing~\ref{lst:rstring_ptr_impl}).
+This matters because an embedded string's bytes live \emph{inside} the owning object,
+while a heap string's bytes live in a separate allocation.
+
+\begin{figure}[tb]
+\begin{lstlisting}[caption={How \texttt{RSTRING\_PTR} selects embedded vs.\ heap storage (simplified from \texttt{rstring.h}).},label={lst:rstring_ptr_impl}]
+static inline char *RSTRING_PTR(VALUE str) {
+  return RB_FL_TEST_RAW(str, RSTRING_NOEMBED)
+    ? RSTRING(str)->as.heap.ptr    /* heap-backed */
+    : RSTRING(str)->as.embed.ary;  /* embedded */
+}
+\end{lstlisting}
+\end{figure}
+
+\subsubsection*{Arrays}
+Arrays similarly have an object header plus an element store.  CRuby may embed a small
+number of elements directly in the object, or it may use a separate buffer referenced
+by a pointer field (conceptually \texttt{ptr} in \texttt{struct RArray}).%
+\footnote{\url{https://docs.ruby-lang.org/capi/en/master/dd/d8b/struct_r_array.html}
+(describes embedded elements vs.\ heap-backed arrays and the \texttt{ptr} field).}
+
+When code needs a raw \texttt{VALUE *} pointing to the contiguous element buffer,
+CRuby provides APIs and macros such as \texttt{RARRAY\_CONST\_PTR} and the scoped
+\texttt{RARRAY\_PTR\_USE} wrapper.  \texttt{RARRAY\_PTR\_USE} makes the ``raw pointer
+region'' explicit and delegates setup/teardown to internal helpers (Listing~\ref{lst:rarray_ptr_use}).
+This scoping is important in practice because arrays can share storage and can change
+representation as they grow or as operations demand copies; treating a raw
+\texttt{VALUE *} as a long-lived stable pointer is therefore brittle.
+
+\begin{figure}[tb]
+\begin{lstlisting}[caption={Scoped raw-pointer access for arrays via \texttt{RARRAY\_PTR\_USE} (from \texttt{rarray.h} documentation).},label={lst:rarray_ptr_use}]
+const VALUE ary = rb_eval_string("[...]");
+const int len = RARRAY_LENINT(ary);
+
+RARRAY_PTR_USE(ary, ptr, {
+  rb_funcallv(rb_stdout, rb_intern("write"), len, ptr);
+});
+\end{lstlisting}
+\end{figure}
+
+\subsubsection*{Typed Data}
+Beyond core containers, a common ``object-owned memory'' pattern is \texttt{T\_DATA}
+(typed data), where a Ruby object owns a pointer to an extension-defined C struct.
+The ownership contract is described by an \texttt{rb\_data\_type\_t} that supplies
+callbacks (notably \texttt{dfree}) that the GC invokes when the wrapper object is
+collected.  The pointer is extracted with \texttt{TypedData\_Get\_Struct}.%
+\footnote{\url{https://docs.ruby-lang.org/en/3.1/extension_rdoc.html} (sections
+``Encapsulate C Data into a Ruby Object'' and \texttt{TypedData\_Get\_Struct}).}
+From the perspective of this paper, the extracted \texttt{struct *} is a derived
+pointer exactly like \texttt{RSTRING\_PTR}: it is valid only while the owning
+\texttt{VALUE} remains live.
+
+\subsubsection*{Two Constraints on Derived Pointers}
+Derived pointers impose two distinct constraints. First, the owning object must remain live: if the owning \texttt{VALUE} becomes unreachable at a GC point, the GC may reclaim the object and its payload, turning any derived pointer into a dangling pointer. Second, the payload storage must remain stable: even if the owning object remains live, the payload storage can change when the object is modified or when CRuby enforces representation invariants. For strings, \texttt{rb\_str\_modify} explicitly prepares a string for mutation and may ensure a dedicated backend storage (i.e., detach from shared storage), while \texttt{rb\_str\_modify\_expand} additionally expands capacity.%
+\footnote{\url{https://docs.ruby-lang.org/capi/en/master/d8/d68/include_2ruby_2internal_2intern_2string_8h.html}
+(see \texttt{rb\_str\_modify} and \texttt{rb\_str\_modify\_expand}).}
+Consequently, a previously obtained \texttt{char *} from \texttt{RSTRING\_PTR} should
+be treated as ephemeral: after any operation that may mutate or resize the string,
+code should re-derive the pointer.
+
+\subsubsection*{A Real CRuby Pattern}
+Derived pointers frequently appear in ``bridge'' code that prepares Ruby arguments,
+extracts raw buffers, and then calls into a C library.  Listing~\ref{lst:ossl_derived_ptr}
+shows an excerpt from CRuby's OpenSSL extension (\texttt{ossl\_cipher\_update}),
+where a Ruby string is coerced via \texttt{StringValue} (which may replace the
+\texttt{VALUE} in-place), then a raw pointer and length are extracted and passed to
+OpenSSL.  This is representative of many CRuby call sites: obtain a raw buffer, make
+additional Ruby calls (often allocating), and finally consume the raw pointer.
+
+\begin{figure}[tb]
+\begin{lstlisting}[caption={Derived pointers used as OpenSSL input/output buffers (excerpt; full listing in Appendix~\ref{app:ossl_cipher_update}).},label={lst:ossl_derived_ptr}]
+VALUE data, str;
+rb_scan_args(argc, argv, "11", &data, &str);
+
+StringValue(data); /* may replace `data` with data.to_str() */
+unsigned char *in = (unsigned char *)RSTRING_PTR(data);
+long in_len = RSTRING_LEN(data);
+
+/* ... allocate/resize output Ruby string `str` ... */
+
+ossl_cipher_update_long(ctx,
+  (unsigned char *)RSTRING_PTR(str), &out_len,
+  in, in_len);
+\end{lstlisting}
+\end{figure}
+
+Because derived pointers are not GC roots, and because compilers may treat the owning
+\texttt{VALUE} as dead once the last \texttt{VALUE}-level use has occurred, code that
+uses derived pointers across allocation-heavy calls is particularly susceptible to the
+Guard Problem discussed in Section~\ref{sec:guard_problem}.
+
+\subsection{Compiler Optimizations and Their Impact on GC Safety}\label{sec:compiler_opts}
+Optimizing compilers may shorten variable lifetimes and reuse storage locations once a \texttt{VALUE} is no longer needed from the language's point of view. This can break GC safety when code derives a raw pointer from a Ruby object and later uses that pointer after the original \texttt{VALUE} has become ``dead'' to the compiler.
+
+Three common optimization families contribute to the Guard Problem. First, compilers compute liveness and may treat a variable as dead right after its last use. Consider a sequence where a subordinate pointer \texttt{p} is extracted from a \texttt{VALUE v} (e.g., \texttt{p = RSTRING\_PTR(v)}), followed by a use of \texttt{p} without any further reference to \texttt{v}. If \texttt{v} is not used again, the compiler may end \texttt{v}'s live range at the extraction point. The register allocator may then reuse the register or stack slot that previously held \texttt{v}, making the object unreachable to conservative scanning.
+
+Second, to reduce stack frame size, compilers may reuse stack slots for locals whose live ranges do not overlap. For instance, GCC exposes \texttt{-fstack-reuse} to control reuse of stack space for locals and temporaries\cite{gcc_fstack_reuse}, and LLVM implements stack coloring to merge disjoint stack slots\cite{llvm_stack_coloring}. For a conservative collector, such reuse can make a live Ruby object invisible.
+
+Third, when a function returns the result of another call, optimizing compilers may replace the call/return sequence with a \emph{tail call} (a jump that deallocates the current frame before entering the callee).  In CRuby, this pattern arises naturally around callbacks: if the compiler can prove there is no work after invoking a callback, it can eliminate the caller frame entirely.  This further reduces the amount of conservatively scanned machine state during the callback, making missing guards even more hazardous.
+
+\texttt{RB\_GC\_GUARD} prevents these issues by creating a (seemingly) observable use of the \texttt{VALUE} \emph{after} a potential GC trigger, forcing the compiler to keep the variable live until that point. Without such a post-trigger use, an optimizing compiler may treat the \texttt{VALUE} as dead at the trigger and eliminate it from stack/register state, even if the source code still names the variable.
+
+We confirmed this effect by compiling CRuby 3.4.5 and inspecting \texttt{wmap\_foreach\_i} in \texttt{weakmap.c}, which copies two \texttt{VALUE}s (\texttt{k}, \texttt{v}) from a \texttt{weakmap\_entry} and calls a callback that may trigger GC.  With \texttt{RB\_GC\_GUARD} present, both GCC 15.2.1 and Clang 21.1.6 materialize \texttt{v} in a stack slot before the call (so the macro can take \texttt{\&(v)}) and emit a post-call load from that slot.  When we remove the \texttt{RB\_GC\_GUARD} calls, the compilers no longer need \texttt{v} as a live local across the callback: they perform the \texttt{UNDEF\_P} check directly against \texttt{entry->val} and emit no spill or post-call load for \texttt{v}.  Disabling sibling-call optimization (e.g., \texttt{-fno-optimize-sibling-calls}) removes the tail jump but does not restore the root; with sibling-call optimization enabled (the default at \texttt{-O2}/\texttt{-O3}), both compilers may additionally emit a tail call that deallocates the caller frame before entering the callback.
+
+\begin{figure}[tb]
+\begin{lstlisting}[caption={Disassembly excerpts showing how an unguarded \texttt{VALUE} can disappear across a call (x86\_64, \texttt{-O3 -fno-optimize-sibling-calls})},label={lst:asm_wmap_foreach_i}]
+; wmap_foreach_i (weakmap.c), x86_64
+
+; GCC 15.2.1, with RB_GC_GUARD:
+mov    rsi, QWORD PTR [rax+0x8]     ; v = entry->val
+mov    QWORD PTR [rsp+0x18], rsi    ; spill v to stack (root)
+call   QWORD PTR [rdx]              ; callback (may trigger GC)
+lea    rdx, [rsp+0x18]              ; &(v) for guard
+mov    QWORD PTR [rsp+0x20], rdx
+mov    rdx, QWORD PTR [rsp+0x18]    ; post-call load via guard
+
+; GCC 15.2.1, with RB_GC_GUARD removed:
+cmp    QWORD PTR [rax+0x8], 0x24    ; UNDEF_P(entry->val), v not materialized
+call   QWORD PTR [rdx]              ; callback (may trigger GC)
+; (no spill / no post-call load for v)
+
+; Clang 21.1.6, with RB_GC_GUARD:
+mov    rcx, QWORD PTR [r14+0x8]     ; v = entry->val
+mov    QWORD PTR [rsp+0x10], rcx    ; spill v to stack (root)
+call   QWORD PTR [rbx]              ; callback (may trigger GC)
+lea    rcx, [rsp+0x10]              ; &(v) for guard
+mov    rcx, QWORD PTR [rcx]         ; post-call load via guard
+
+; Clang 21.1.6, with RB_GC_GUARD removed:
+cmp    QWORD PTR [r14+0x8], 0x24    ; UNDEF_P(entry->val), v not materialized
+call   QWORD PTR [rbx]              ; callback (may trigger GC)
+\end{lstlisting}
+\end{figure}
+
+\subsection{Conservative Stack Scanning of CRuby's GC}
+CRuby uses conservative scanning for native-stack roots. Under this strategy, whether a Ruby object is retained depends on whether some machine-state location still contains a bit pattern that looks like a pointer to the object. If an optimizing compiler shortens the lifetime of the owning \texttt{VALUE} and reuses its storage, the object may become invisible to the collector even though subordinate pointers into its subordinate memory are still in use\cite{wang2025reworking}.
+
+\subsection{The \texttt{RB\_GC\_GUARD} Mechanism}
+To prevent subordinate pointers from outliving their owning \texttt{VALUE} under these optimizations, CRuby exposes the macro \texttt{RB\_GC\_GUARD} as an explicit optimization barrier. \texttt{RB\_GC\_GUARD} is implemented by creating a \texttt{volatile VALUE *} pointing to \texttt{v} and issuing an empty inline assembly statement with a memory constraint, making the access appear as an observable side effect that must not be optimized away or reordered past the guard. CRuby's documentation recommends \texttt{RB\_GC\_GUARD} over using \texttt{volatile} directly, because the macro localizes the optimization impact to the guard site and can be specialized per compiler/architecture when necessary\cite{ruby_capi_rb_gc_guard}. A simplified GNU-style implementation of \texttt{RB\_GC\_GUARD} in CRuby is shown in Listing~\ref{lst:rbgcguard}.
+
+\begin{figure}[tb]
+\begin{lstlisting}[caption={RB\_GC\_GUARD's Definition},label={lst:rbgcguard}]
+#ifdef __GNUC__
+#define RB_GC_GUARD(v) \
+    (*__extension__ ({ \
+        volatile VALUE *rb_gc_guarded_ptr = &(v); \
+        __asm__("" : : "m"(rb_gc_guarded_ptr)); \
+        rb_gc_guarded_ptr; \
+    }))
+// ... (other compiler implementations omitted)
+#endif
+\end{lstlisting}
+\end{figure}
+
+\subsection{The Guard Problem}\label{sec:guard_problem}
+
+\begin{figure}[tb]
+\begin{lstlisting}[caption={The Guard Problem}]
+VALUE str = rb_str_new_cstr("Hello");
+char *ptr = RSTRING_PTR(str);
+rb_ary_push(array, other_value);
+// may trigger GC
+printf("%s\n", ptr);
+// use after potential GC
+\end{lstlisting}
+\end{figure}
+
+Manual \texttt{RB\_GC\_GUARD} placement is error-prone because developers must identify derivations, potential GC triggers, and the temporal coverage needed for the subordinate pointer's lifetime. Moreover, GC may not run even when a trigger site is reached, making bugs hard to reproduce. We refer to this as the Guard Problem.
+
+Bugs caused by missing guards are difficult to debug because GC timing is non-deterministic. A missing guard creates a \emph{possibility} of use-after-free, but a crash only occurs if a GC cycle is triggered at the vulnerable point \emph{and} the compiler has optimized away the root reference. As a result, code may pass testing for years and fail only under certain build configurations or high memory pressure, making these bugs hard to reproduce and diagnose.
+
+Traditional static analyses for use-after-free in C/C++~\cite{static_analysis_use_after_free_cpp,spatio_temporal_context_reduction,static_analysis_dangling_pointer} do not directly address this conservative-GC setting.
+
+\subsection{Performance Impact of Guards}\label{sec:Benchmark}
+
+At first glance, \texttt{RB\_GC\_GUARD} looks ``free'' because the GNU-style implementation expands to an empty inline assembly statement.  However, its purpose is precisely to \emph{change} the compiler's optimization decisions: it forces an observable use of the guarded \texttt{VALUE} at the guard site. Concretely, the macro takes the address of the \texttt{VALUE}, stores it through a \texttt{volatile VALUE *}, and feeds that pointer to an inline-assembly operand with a memory constraint~\cite{ruby_capi_rb_gc_guard} (see Listing~\ref{lst:rbgcguard}). This makes the guarded variable \emph{address-taken} and therefore typically forces it to be materialized in a stack slot (so that \texttt{\&(v)} is meaningful), and it can induce an extra post-trigger reload from that slot. In optimized builds, these constraints increase register pressure and can introduce spill/reload traffic, inhibit stack-slot reuse and tail-call optimization, and block otherwise-valid code motion.
+
+Guarding can also affect performance indirectly through CRuby's conservative root discovery.  Conservative stack scanning is linear in the amount of native stack memory that is considered ``in use.''  When guards force more locals to be kept in stack slots (and, in the ``guard-everything'' configuration, extend live ranges to the end of a scope), they can increase both the number of machine words that must be scanned at each GC and the number of accidental pointer-shaped values that retain objects, delaying reclamation.  Thus, even though \texttt{RB\_GC\_GUARD} is not a GC call, indiscriminate use can increase GC work and memory retention.
+
+A naive strategy is to add \texttt{RB\_GC\_GUARD} to every \texttt{VALUE} variable. To assess practicality, we instrumented CRuby to apply \texttt{RB\_GC\_GUARD} broadly and ran \texttt{ruby-bench} as of commit e1e2ae3 \footnote{\url{https://github.com/ruby/ruby-bench/tree/e1e2ae32a3f8f003adf3c1a8ec4baca77dc4c091}}, the benchmark suite used by CRuby developers, comparing the instrumented build against the unmodified baseline. All benchmark measurements were obtained on a desktop equipped with an AMD Ryzen 7 5700X3D CPU.
+
+To make this ``guard-everything'' configuration reproducible without manual editing, we generated the instrumentation mechanically. We first ran a CodeQL query to enumerate local variables whose declared type is \texttt{VALUE} and to locate the end of each variable's lexical scope in the C AST (i.e., the closing brace of the smallest enclosing compound statement that defines the variable's lifetime). The query emits the source file and line/column coordinates of each scope end together with the variable name. A small Python source-to-source rewriting script then applies these edits by inserting \texttt{RB\_GC\_GUARD(v);} immediately before the corresponding scope end (skipping sites that already contain an explicit guard for the same variable). This produces a consistent instrumented variant that approximates an upper bound on the optimization impact of pervasive guarding.
+
+We observed benchmark-dependent effects. In our setup, the geometric mean performance difference was approximately 6.99\% across the suite (positive indicates slowdown), with a maximum slowdown of 32.54\%. Figure~\ref{fig:benchmark_comparison} summarizes the results.
+
+\begin{figure}[ht]
+\centering
+\includegraphics[width=\linewidth]{benchmark_comparison.pdf}
+\caption{Performance change from guarding all VALUEs relative to the original CRuby (positive values indicate slowdown).}
+\label{fig:benchmark_comparison}
+\end{figure}
+
+The slowdown is benchmark-dependent because the additional spill/reload and inhibited optimizations matter most when the baseline work per iteration is small and the affected VM primitive sits on the hot path. In ruby-bench, \texttt{setivar\_young} and \texttt{setivar\_object} are microbenchmarks intended to stress instance-variable writes and the GC write-barrier path by setting an instance variable to a heap object (rather than an immediate), which requires write-barrier bookkeeping.\footnote{\url{https://github.com/ruby/ruby-bench/blob/main/benchmarks.yml} and benchmark sources.} Because these benchmarks measure a tight loop whose body is essentially ``set ivar + barrier,'' any additional per-iteration overhead introduced in the corresponding C fast path (including extra stack traffic from pervasive guards) appears almost directly as a large percentage slowdown.
+
+The \texttt{fluentd} benchmark, in contrast, is a macrobenchmark derived from a production log collector workload that parses logs and forwards them to destinations. Such pipelines are CPU-intensive, and this style of workload allocates and manipulates large numbers of strings and hashes, spending much of its time in C implementations of core operations and exercising GC frequently.  Consequently, a global ``guard-everything'' modification affects many hot runtime functions (not just a single site), and the aggregate cost compounds across the workload.
+
+These results suggest that indiscriminate guarding can harm the interpreter's performance. This motivates a tool that helps focus review on likely omission sites and highlights candidates for cleanup.
