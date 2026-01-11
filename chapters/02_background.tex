@@ -19,7 +19,7 @@ However, because they are ordinary C pointers, their validity depends on (i) the
 liveness of the owning Ruby object and (ii) the stability of the payload storage.
 
 \subsubsection*{Strings}
-For strings, the canonical derived-pointer operation is \texttt{RSTRING\_PTR(str)},
+For strings, the standard derived-pointer operation is \texttt{RSTRING\_PTR(str)},
 which returns a \texttt{char *} to the string's bytes, and \texttt{RSTRING\_LEN(str)}
 which returns the byte length.  Importantly, Ruby strings are byte sequences and do
 not promise a terminating NUL byte; if a C string is required, extension authors are

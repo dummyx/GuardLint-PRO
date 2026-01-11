@@ -16,7 +16,7 @@ Combining these requirements, a missing guard is indicated when a derived pointe
 
 \subsection{Scale of the Codebase}
 
-CRuby comprises over 300,000 lines of C code with more than 23,000 \texttt{VALUE} variables and over 42,000 functions. Naive enumeration of all possible derivation-trigger-use triples would be computationally infeasible---a cubic algorithm over these quantities could require examining on the order of $10^{13}$ combinations. Any practical analyzer must employ efficient indexing and pruning strategies to focus on relevant program fragments while completing in a reasonable time frame.
+CRuby comprises over 300,000 lines of C code with more than 23,000 \texttt{VALUE} variables and over 42,000 functions. Naive enumeration of all possible derivation-trigger-use triples would be computationally impractical: a cubic algorithm over these quantities could require examining on the order of $10^{13}$ combinations. Any practical analyzer must employ efficient indexing and pruning strategies to focus on relevant program fragments while completing in a reasonable time frame.
 
 \subsection{Pervasiveness of GC Triggers}
 
@@ -44,7 +44,7 @@ Binary data & \texttt{rb\_io\_buffer\_get\_bytes} & \texttt{void *} \\
 \end{tabular}
 \end{table}
 
-Additionally, derived pointers may be passed through multiple variables or returned from helper functions, requiring tracking of pointer provenance. Full interprocedural tracking of such provenance is expensive and may introduce additional imprecision.
+Additionally, derived pointers may be passed through multiple variables or returned from helper functions, requiring tracking of where pointer values originate. Full interprocedural tracking of pointer origins is expensive and may introduce additional imprecision.
 
 \subsection{Detecting Existing Guards}
 

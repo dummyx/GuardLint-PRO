@@ -6,20 +6,28 @@ GuardLint's results are candidates for review rather than definitive proofs of u
 
 The current implementation does not model pointer derivation operations deeply, but relies on the approximation that any pointer derived from a \texttt{VALUE} shares the lifetime requirements of that \texttt{VALUE}. Some derivation patterns may be missed if they use APIs not included in our model.
 
-Some special patterns that require domain knowledge of CRuby's implementation are not fully handled. For example, \texttt{VALUE}s initialized by \texttt{rb\_scan\_args} are not automatically treated as safe anchors, even though they often are in practice due to their presence in the caller's stack frame.
+A fundamental limitation is that the analysis tracks variable-level usage rather than actual pointer values. This leads to imprecision in two directions:
 
-Whether the relevant optimizations occur depends on the build configuration and the stack layout chosen by the compiler. Our simulated experiment in the OpenSSL case illustrates that patterns that appear safe under one configuration can become problematic under a more aggressive one. The analysis therefore surfaces candidates that merit review rather than providing proofs of either safety or unsafety.
+\begin{itemize}
+\item \textbf{False positives from safe anchoring elsewhere.} A \texttt{VALUE} may be safely anchored even when the local variable appears dead. For example, \texttt{VALUE}s initialized by \texttt{rb\_scan\_args} are typically still visible in the caller's stack frame, making the local copy redundant for GC visibility. The current analysis does not recognize such patterns and may flag these as missing guards.
+
+\item \textbf{Missed distinction for newly allocated objects.} A variable may hold a pointer to a newly allocated object that differs from the original. In the \texttt{ossl\_cipher\_update} case (Section~\ref{sec:Experiment}), \texttt{StringValue(data)} may replace \texttt{data} with a freshly created string object. Even if the original argument was safely anchored in the caller's frame, the new object exists only in the local variable. Without tracking where the pointer value originates, the analysis cannot distinguish safe cases (original value still held) from unsafe cases (newly allocated value).
+\end{itemize}
+
+Handling these patterns requires domain knowledge of CRuby's implementation. Functions like \texttt{rb\_scan\_args} provide implicit anchoring guarantees that are difficult to infer through purely syntactic static analysis.
+
+Whether the relevant optimizations occur also depends on the build configuration and the stack layout chosen by the compiler. Our simulated experiment in the OpenSSL case illustrates that patterns that appear safe under one configuration can become problematic under a more aggressive one. The analysis therefore surfaces candidates that merit review rather than providing proofs of either safety or unsafety.
 
 \subsection{Threats to Validity}
 
-GuardLint operationalizes ``needs a guard'' via modeled derivations, modeled trigger reachability, and modeled uses. Any mismatch between these operational definitions and the real conditions under which CRuby becomes unsafe will produce false positives or false negatives. In particular, our trigger analysis is a may-trigger approximation, and our derivation model is incomplete by design.
+GuardLint defines ``needs a guard'' via modeled derivations, modeled trigger reachability, and modeled uses. Any mismatch between these operational definitions and the real conditions under which CRuby becomes unsafe will produce false positives or false negatives. In particular, our trigger analysis is a may-trigger approximation, and our derivation model is incomplete by design.
 
 Case-study conclusions depend on manual reasoning about subtle control-flow and object-lifetime effects, and on the particular stress-style simulation used to approximate aggressive optimization. These checks strengthen confidence, but they do not fully substitute for establishing a concrete miscompilation pattern in a production build.
 
 The observed counts and findings depend on the specific CRuby revision and the compiler/toolchain configuration. Different compilers, optimization levels, architectures, and link-time optimizations may change when \texttt{RB\_GC\_GUARD} is required in practice. The analysis should therefore be interpreted as surfacing brittle or suspicious patterns that warrant review, not as a compiler-specific guarantee.
 
 \subsection{Future Work}
-We plan to improve GuardLint in three main areas. First, we aim to better incorporate domain knowledge of CRuby's implementation, such as encoding specific API patterns like argument parsing with \texttt{rb\_scan\_args} directly into the query. Second, we intend to enhance interprocedural analysis to distinguish cases where a derived pointer is merely passed through from cases where it is dereferenced or stored across GC-triggering calls inside callees. Third, we will improve the modeling of pointer derivation to specifically track pointers that reference internal, managed memory.
+We plan to improve GuardLint in three main areas. First, we aim to better incorporate domain knowledge of CRuby's implementation, such as encoding specific API patterns like argument parsing with \texttt{rb\_scan\_args} directly into the query. Second, we intend to enhance interprocedural analysis to distinguish cases where a derived pointer is merely passed through from cases where it is dereferenced or stored across GC-triggering calls inside callees. Third, we will incorporate data-flow tracking to determine where pointer values originate: whether from caller-provided storage (likely safe) or from local allocations (requires guarding).
 
 \subsection{Practical Use}
 GuardLint is intended to support maintainable review workflows. In practice, we expect it to be used in two complementary modes: auditing and refactoring, where developers review potentially redundant guards and remove them where clearly safe; and regression prevention, where developers run the missing-guard query on changes that touch C code and review newly introduced candidates. Because \texttt{RB\_GC\_GUARD} has nontrivial performance impact (Section~\ref{sec:Benchmark}), selective insertion and removal guided by a static checker can be preferable to indiscriminate guarding.

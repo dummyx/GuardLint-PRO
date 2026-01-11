@@ -14,7 +14,7 @@ These capabilities align well with the challenges identified in Section~\ref{sec
 
 \subsection{Detection Algorithm}\label{sec:detection_algorithm}
 
-Our detection algorithm operationalizes the query requirements from Section~\ref{sec:Challenges} as a conjunction of predicates over the CodeQL database. The core detection pattern can be expressed as an ordering constraint over control-flow paths:
+Our detection algorithm implements the query requirements from Section~\ref{sec:Challenges} as a conjunction of predicates over the CodeQL database. The core detection pattern can be expressed as an ordering constraint over control-flow paths:
 
 \[
 \textsc{Derivation}(p \leftarrow v) \xrightarrow{CFG^*} \textsc{LastUse}(v) \xrightarrow{CFG^+} \textsc{Trigger} \xrightarrow{CFG^+} \textsc{Use}(p)
