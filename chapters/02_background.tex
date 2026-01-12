@@ -44,43 +44,7 @@ static inline char *RSTRING_PTR(VALUE str) {
 \end{lstlisting}
 \end{figure}
 
-\subsubsection*{Arrays}
-Arrays similarly have an object header plus an element store.  CRuby may embed a small
-number of elements directly in the object, or it may use a separate buffer referenced
-by a pointer field (conceptually \texttt{ptr} in \texttt{struct RArray}).%
-\footnote{\url{https://docs.ruby-lang.org/capi/en/master/dd/d8b/struct_r_array.html}
-(describes embedded elements vs.\ heap-backed arrays and the \texttt{ptr} field).}
-
-When code needs a raw \texttt{VALUE *} pointing to the contiguous element buffer,
-CRuby provides APIs and macros such as \texttt{RARRAY\_CONST\_PTR} and the scoped
-\texttt{RARRAY\_PTR\_USE} wrapper.  \texttt{RARRAY\_PTR\_USE} makes the ``raw pointer
-region'' explicit and delegates setup/teardown to internal helpers (Listing~\ref{lst:rarray_ptr_use}).
-This scoping is important in practice because arrays can share storage and can change
-representation as they grow or as operations demand copies; treating a raw
-\texttt{VALUE *} as a long-lived stable pointer is therefore brittle.
-
-\begin{figure}[tb]
-\begin{lstlisting}[caption={Scoped raw-pointer access for arrays via \texttt{RARRAY\_PTR\_USE} (from \texttt{rarray.h} documentation).},label={lst:rarray_ptr_use}]
-const VALUE ary = rb_eval_string("[...]");
-const int len = RARRAY_LENINT(ary);
-
-RARRAY_PTR_USE(ary, ptr, {
-  rb_funcallv(rb_stdout, rb_intern("write"), len, ptr);
-});
-\end{lstlisting}
-\end{figure}
-
-\subsubsection*{Typed Data}
-Beyond core containers, a common ``object-owned memory'' pattern is \texttt{T\_DATA}
-(typed data), where a Ruby object owns a pointer to an extension-defined C struct.
-The ownership contract is described by an \texttt{rb\_data\_type\_t} that supplies
-callbacks (notably \texttt{dfree}) that the GC invokes when the wrapper object is
-collected.  The pointer is extracted with \texttt{TypedData\_Get\_Struct}.%
-\footnote{\url{https://docs.ruby-lang.org/en/3.1/extension_rdoc.html} (sections
-``Encapsulate C Data into a Ruby Object'' and \texttt{TypedData\_Get\_Struct}).}
-From the perspective of this paper, the extracted \texttt{struct *} is a derived
-pointer exactly like \texttt{RSTRING\_PTR}: it is valid only while the owning
-\texttt{VALUE} remains live.
+Similar derived-pointer patterns exist for arrays (\texttt{RARRAY\_PTR\_USE}) and typed data (\texttt{TypedData\_Get\_Struct}); these are described in Appendix~\ref{app:derived_pointers}.
 
 \subsubsection*{Two Constraints on Derived Pointers}
 Derived pointers impose two distinct constraints. First, the owning object must remain live: if the owning \texttt{VALUE} becomes unreachable at a GC point, the GC may reclaim the object and its payload, turning any derived pointer into a dangling pointer. Second, the payload storage must remain stable: even if the owning object remains live, the payload storage can change when the object is modified or when CRuby enforces representation invariants. For strings, \texttt{rb\_str\_modify} explicitly prepares a string for mutation and may ensure a dedicated backend storage (i.e., detach from shared storage), while \texttt{rb\_str\_modify\_expand} additionally expands capacity.%
@@ -189,7 +153,7 @@ call   QWORD PTR [rbx]            ; callback (may trigger GC)
 \subsection{The Guard Problem}\label{sec:guard_problem}
 
 \begin{figure}[tb]
-\begin{lstlisting}[caption={The Guard Problem}]
+\begin{lstlisting}[caption={The Guard Problem},label={lst:guard_problem}]
 VALUE str = rb_str_new_cstr("Hello");
 char *ptr = RSTRING_PTR(str);
 rb_ary_push(array, other_value);

@@ -1,8 +1,48 @@
 \appendix
+\section{Additional Derived-Pointer Examples}\label{app:derived_pointers}
+
+This appendix presents additional examples of object-owned memory and derived pointers in CRuby, supplementing the string example in Section~\ref{sec:Background}.
+
+\subsection*{Arrays}
+Arrays similarly have an object header plus an element store.  CRuby may embed a small
+number of elements directly in the object, or it may use a separate buffer referenced
+by a pointer field (conceptually \texttt{ptr} in \texttt{struct RArray}).\footnote{\url{https://docs.ruby-lang.org/capi/en/master/dd/d8b/struct_r_array.html}
+(describes embedded elements vs.\ heap-backed arrays and the \texttt{ptr} field).}
+
+When code needs a raw \texttt{VALUE *} pointing to the contiguous element buffer,
+CRuby provides APIs and macros such as \texttt{RARRAY\_CONST\_PTR} and the scoped
+\texttt{RARRAY\_PTR\_USE} wrapper.  \texttt{RARRAY\_PTR\_USE} makes the ``raw pointer
+region'' explicit and delegates setup/teardown to internal helpers (Listing~\ref{lst:rarray_ptr_use}).
+This scoping is important in practice because arrays can share storage and can change
+representation as they grow or as operations demand copies; treating a raw
+\texttt{VALUE *} as a long-lived stable pointer is therefore brittle.
+
+\begin{figure}[tb]
+\begin{lstlisting}[caption={Scoped raw-pointer access for arrays via \texttt{RARRAY\_PTR\_USE} (from \texttt{rarray.h} documentation).},label={lst:rarray_ptr_use}]
+const VALUE ary = rb_eval_string("[...]");
+const int len = RARRAY_LENINT(ary);
+
+RARRAY_PTR_USE(ary, ptr, {
+  rb_funcallv(rb_stdout, rb_intern("write"), len, ptr);
+});
+\end{lstlisting}
+\end{figure}
+
+\subsection*{Typed Data}
+Beyond core containers, a common ``object-owned memory'' pattern is \texttt{T\_DATA}
+(typed data), where a Ruby object owns a pointer to an extension-defined C struct.
+The ownership contract is described by an \texttt{rb\_data\_type\_t} that supplies
+callbacks (notably \texttt{dfree}) that the GC invokes when the wrapper object is
+collected.  The pointer is extracted with \texttt{TypedData\_Get\_Struct}.\footnote{\url{https://docs.ruby-lang.org/en/3.1/extension_rdoc.html} (sections
+``Encapsulate C Data into a Ruby Object'' and \texttt{TypedData\_Get\_Struct}).}
+From the perspective of this paper, the extracted \texttt{struct *} is a derived
+pointer exactly like \texttt{RSTRING\_PTR}: it is valid only while the owning
+\texttt{VALUE} remains live.
+
 \section{Source Code of \texttt{ossl\_cipher\_update}}\label{app:ossl_cipher_update}
 Quoted from CRuby v3.4.5.\footnote{\url{https://github.com/ruby/ruby/blob/20cda200d3ce092571d0b5d342dadca69636cb0f/ext/openssl/ossl_cipher.c#L372}}
-\begin{lstlisting}
-    /*
+\begin{lstlisting}[caption={Source code of \texttt{ossl\_cipher\_update}},label={lst:ossl_cipher_update_full}]
+	    /*
  *  call-seq:
  *     cipher.update(data [, buffer]) -> string or buffer
  *
@@ -70,10 +110,10 @@ ossl_cipher_update(int argc, VALUE *argv, VALUE self)
 
 \section{Source code of \texttt{ruby\_brace\_expand}}\label{app:ruby_brace_expand}
 Quoted from CRuby v3.4.5.\footnote{\url{https://github.com/ruby/ruby/blob/20cda200d3ce092571d0b5d342dadca69636cb0f/dir.c#L3193}}
-\begin{lstlisting}
-static int
-ruby_brace_expand(const char *str, int flags, ruby_glob_func *func, VALUE arg,
-                  rb_encoding *enc, VALUE var)
+\begin{lstlisting}[caption={Source code of \texttt{ruby\_brace\_expand}},label={lst:ruby_brace_expand_full}]
+	static int
+	ruby_brace_expand(const char *str, int flags, ruby_glob_func *func, VALUE arg,
+	                  rb_encoding *enc, VALUE var)
 {
     const int escape = !(flags & FNM_NOESCAPE);
     const char *p = str;
