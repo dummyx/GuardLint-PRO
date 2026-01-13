@@ -1,5 +1,6 @@
 \section{Introduction}
 Many garbage-collected languages, such as Ruby, Python, JavaScript and Java, are implemented in low-level languages (e.g., C and C++) that do not have garbage collection mechanisms.  In order for garbage collectors (GCs) to correctly recognize live objects, object manipulations in the low-level implementations need to accompany with ``GC operations'' that inform GCs of object references stored and passed around in registers and memory.
+%\footnote{one might think that language implementations that use a conservative GC do not need to write explicit GC operations.  However, as we will see in Section xx, they still need to do SOMETHING.  The term GC operations in this paper includes such a THING.}
 
 Incorrect GC operations (i.e., omitted GC operations and unnecessary GC operations) can cause serious problems.
 For example, in Go, when a file descriptor is extracted from an \texttt{os.File} object and passed to a system call, the garbage collector may determine that the \texttt{os.File} is no longer referenced and collect it, triggering a finalizer that closes the file descriptor while the system call is still in progress\cite{GoKeepAlive,GoIssue9046}.

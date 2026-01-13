@@ -1,7 +1,7 @@
 \section{Experiment}\label{sec:Experiment}
 We evaluated GuardLint on the CRuby codebase tagged \texttt{v3\_4\_5}, which contains 339{,}617 lines of C code as measured by \texttt{scc}\footnote{\url{https://github.com/boyter/scc}}.
 
-Our evaluation focuses on two practical questions: whether GuardLint can systematically surface a manageable set of candidates for human review in a large VM codebase, and whether the model is sufficiently precise to identify at least some actionable findings (both omissions and redundant guards) without requiring intrusive instrumentation or specialized compilers.
+Our evaluation focuses on two practical questions: whether GuardLint can systematically surface a manageable set of candidates for human review in a large codebase, and whether the model is sufficiently precise to identify at least some actionable findings (both omissions and redundant guards) without requiring intrusive instrumentation or specialized compilers.
 
 To provide context on the scale of the analysis inputs, we ran auxiliary CodeQL subqueries over the same database to obtain basic metrics shown in Table~\ref{tab:codeql_subquery_stats}.
 
@@ -25,7 +25,7 @@ Guarded \texttt{VALUE}s & 301 \\
 We evaluated the execution time on the same machine used for benchmarking (Section~\ref{sec:Benchmark}). The full GuardLint query set over the CRuby v3.4.5 CodeQL database completed in approximately 1000 seconds. This runtime is practical for local use and may be suitable for CI integration.
 
 \subsection{Classification and Summary of Results}
-We compare GuardLint's judgments with existing \texttt{RB\_GC\_GUARD} placements in the codebase as a reference point. We classify an existing guard as \emph{Matched} if the guarded variable satisfies our \texttt{needsGuard} predicate at that program point. We classify it as \emph{Potentially redundant} if the variable does not satisfy \texttt{needsGuard} there (e.g., there is no modeled GC trigger on relevant paths, or the variable is accessed after the trigger). Finally, we report a \emph{Missing} site when a variable satisfies \texttt{needsGuard} but is not detected as guarded.
+We compare GuardLint's judgments with existing \texttt{RB\_GC\_GUARD} placements in the codebase as a reference point. We classify an existing guard as \emph{Matched} if the guarded variable satisfies our \texttt{needsGuard} predicate at that program point. We classify it as \emph{Potentially redundant} if the variable does not satisfy \texttt{needsGuard} there (e.g., there is no modeled GC trigger on relevant paths, or the variable is accessed after the trigger). Finally, we report a \emph{Omitting} site when a variable satisfies \texttt{needsGuard} but is not detected as guarded.
 
 These labels are defined strictly \emph{under GuardLint's model}: a ``potentially redundant'' report indicates that the specific derived-pointer hazard pattern is absent according to the modeled derivations, triggers, and uses, but it does not by itself prove that the guard is unnecessary for all purposes (e.g., future edits, unmodeled derivations, or defensive coding).
 
@@ -39,19 +39,19 @@ Our analysis yielded the results shown in Table~\ref{tab:results}.
 \toprule
 \textbf{Category} & \textbf{Count} \\
 \midrule
-Missing Guards (Candidate Omissions) & 232 \\
+Omitted Guards (Candidate Omissions) & 232 \\
 Matched Guards (Existing guards flagged as needed) & 36 \\
 Potentially Redundant Guards & 265 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-The analysis flagged 232 locations that match the missing-guard pattern under our current model. Additionally, 265 existing guards were flagged as potentially redundant.
+The analysis flagged 232 locations that match the omitted-guard pattern under our current model. Additionally, 265 existing guards were flagged as potentially redundant.
 
 We further classify inspected candidate omissions into three categories. \emph{Reproducible bugs} are cases where the unmodified CRuby build exhibits a crash or data corruption when executing a test case derived from the report. \emph{Highly-likely bugs} are cases where manual inspection indicates that the code may be problematic, and the issue can be triggered by a simulated stress test that approximates aggressive optimization behavior (e.g., explicitly killing the owning \texttt{VALUE} immediately after its last \texttt{VALUE} use). Such patterns may become harmful as compiler optimizations and build configurations evolve. \emph{False positives} are reports attributable to limitations of our model (e.g., over-approximation of pointer derivations, GC triggers, or post-trigger uses), where manual inspection indicates that there is no derived-pointer lifetime that outlives the visibility of the owning \texttt{VALUE}.
 
 \subsection{Case Study: \texttt{ossl\_cipher\_update}}
-Manual inspection of the query results found one highly-likely missing guard in \texttt{ossl\_cipher\_update} in the OpenSSL extension (see Appendix~\ref{app:ossl_cipher_update}). The local variable \texttt{data} is initialized through \texttt{rb\_scan\_args}. This is often safe because the argument value is typically present on the stack due to the calling convention. However, the code then calls \texttt{StringValue(data)}, which may replace \texttt{data} with a new pointer to a new string object, and later executes operations that may trigger GC before the subordinate pointer is fully used.
+Manual inspection of the query results found one highly-likely omitted guard in \texttt{ossl\_cipher\_update} in the OpenSSL extension (see Appendix~\ref{app:ossl_cipher_update}). The local variable \texttt{data} is initialized through \texttt{rb\_scan\_args}. This is often safe because the argument value is typically present on the stack due to the calling convention. However, the code then calls \texttt{StringValue(data)}, which may replace \texttt{data} with a new pointer to a new string object, and later executes operations that may trigger GC before the subordinate pointer is fully used.
 
 We did not reproduce a crash on the original CRuby. Under our build configuration, the compiler did not generate code that overwrote the \texttt{data} \texttt{VALUE} in a way that would make it invisible to conservative scanning.
 

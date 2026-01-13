@@ -8,11 +8,11 @@ Given the challenges outlined in Section~\ref{sec:Challenges}, we considered sev
 
 Traditional approaches to static analysis include custom analyzers written in general-purpose languages, pattern-matching tools such as Coccinelle\cite{UgawaFujimoto2019PRO}, and compiler-integrated analyses. Custom analyzers offer maximum flexibility but require substantial engineering effort to parse C code, construct control-flow graphs, and implement efficient indexing. Pattern-matching tools excel at syntactic transformations but lack the semantic analysis needed to track control-flow ordering and compute call-graph reachability. Compiler-integrated analyses (e.g., GCC plugins, Clang checkers) provide rich semantic information but are tightly coupled to specific compiler versions and optimization pipelines.
 
-We selected CodeQL as our implementation platform for several reasons. First, CodeQL represents source code as a queryable relational database, with pre-computed indices over types, names, and structural properties\cite{ql_ecoop}. This enables efficient lookups that avoid the need for full enumeration. Second, CodeQL provides built-in support for C/C++ analysis, including macro expansion tracking, control-flow graph construction, and type inference. Third, the QL language supports recursive predicates with automatic memoization and fixed-point computation\cite{codeql_recursion}, which is essential for computing transitive call-graph reachability. Fourth, CodeQL's declarative query language allows patterns to be specified at a high level of abstraction while the query optimizer handles efficient execution. Fifth, CodeQL provides the \texttt{MacroInvocation} class\cite{codeql_macroinvocation} that can identify macro uses by name when metadata is available, which is crucial for detecting \texttt{RB\_GC\_GUARD} invocations.
+We selected CodeQL as our implementation platform for several reasons. First, CodeQL represents source code as a queryable relational database, with pre-computed indices over types, names, and structural properties\cite{ql_ecoop}. This enables efficient lookups that avoid the need for full enumeration. Second, CodeQL provides built-in support for C/C++ analysis, including AST matching, control-flow analysis functionability, and type inference. Third, the QL language supports recursive predicates \cite{codeql_recursion}, which is essential for computing transitive call-graph reachability. Fourth, CodeQL's declarative query language allows patterns to be specified at a high level of abstraction while the query optimizer handles efficient execution.
 
-These capabilities align well with the challenges identified in Section~\ref{sec:Challenges}: indexed database access addresses scale (C1), built-in macro and type support addresses derivation diversity (C2), recursive queries address GC trigger pervasiveness (C3), macro metadata addresses guard detection (C4), and declarative specification enables rapid iteration on the precision-recall tradeoff (C5).
+These capabilities align well with the challenges identified in Section~\ref{sec:Challenges}: indexed database access addresses scale (C1), built-in macro and type support addresses derivation diversity (C2), recursive queries address GC trigger  (C3), macro metadata addresses guard detection (C4).
 
-\subsection{Detection Algorithm}\label{sec:detection_algorithm}
+\subsection{Query Implementation}\label{sec:detection_algorithm}
 
 Our detection algorithm implements the query requirements from Section~\ref{sec:Challenges} as a conjunction of predicates over the CodeQL database. The core detection pattern can be expressed as an ordering constraint over control-flow paths:
 
@@ -22,10 +22,10 @@ Our detection algorithm implements the query requirements from Section~\ref{sec:
 
 where $\xrightarrow{CFG^*}$ denotes zero or more control-flow steps and $\xrightarrow{CFG^+}$ denotes one or more steps. The constraint captures that the last \texttt{VALUE}-level use of $v$ must precede the trigger, which in turn must precede the use of $p$.
 
-Listing~\ref{lst:running_example} illustrates a vulnerable pattern. The local variable \texttt{str} is used to derive a pointer \texttt{ptr} on line 3. The last \texttt{VALUE}-level access to \texttt{str} occurs on line 4 via \texttt{RSTRING\_LEN}. A GC-triggering call occurs on line 6 (\texttt{rb\_str\_new}), after which \texttt{ptr} is used on line 8. Because \texttt{str} has no access after the trigger and no explicit guard, an optimizing compiler may treat \texttt{str} as dead at line 6, potentially causing \texttt{ptr} to become a dangling pointer.
+Listing~\ref{lst:running_example} illustrates a buggy pattern. The local variable \texttt{str} is used to derive a pointer \texttt{ptr} on line 3. The last \texttt{VALUE}-level access to \texttt{str} occurs on line 4 via \texttt{RSTRING\_LEN}. A GC-triggering call occurs on line 6 (\texttt{rb\_str\_new}), after which \texttt{ptr} is used on line 8. Because \texttt{str} has no access after the trigger and no explicit guard, an optimizing compiler may treat \texttt{str} as dead at line 6, potentially causing \texttt{ptr} to become a dangling pointer.
 
 \begin{figure}[tb]
-\begin{lstlisting}[caption={Running example: a vulnerable pattern in CRuby extension code.},label={lst:running_example}]
+\begin{lstlisting}[caption={Running example: a buggy pattern in CRuby extension code.},label={lst:running_example}]
 static VALUE process_data(VALUE input) {
     VALUE str = rb_funcall(input, rb_intern("to_s"), 0);
     char *ptr = RSTRING_PTR(str);     // derivation
@@ -39,7 +39,7 @@ static VALUE process_data(VALUE input) {
 \end{lstlisting}
 \end{figure}
 
-The algorithm proceeds in four phases. In the first phase, we identify all local variables of type \texttt{VALUE}. In the second phase, for each \texttt{VALUE} variable, we find derivation sites where a raw pointer is extracted. In the third phase, we compute the set of functions that may transitively trigger GC via call-graph reachability. In the fourth phase, we check control-flow ordering constraints to identify variables that need guards but lack them.
+The query proceeds in four phases. In the first phase, we identify all local variables of type \texttt{VALUE}. In the second phase, for each \texttt{VALUE} variable, we find derivation sites where a raw pointer is derived. In the third phase, we compute the set of functions that may transitively trigger GC via call-graph reachability. In the fourth phase, we check control-flow ordering constraints to identify variables that need guards but lack them.
 
 \subsection{Implementation}\label{sec:implementation}
 
@@ -61,36 +61,22 @@ class ValueVariable extends LocalVariable {
 \end{figure}
 
 \subsubsection*{Detecting Pointer Derivations}
-We define predicates that recognize common derivation operations in CRuby. Listing~\ref{lst:derivation_predicate} shows the structure of our derivation detection. The modeled derivation patterns cover string access via \texttt{RSTRING\_PTR}, \texttt{RSTRING\_END}, \texttt{StringValuePtr}, and \texttt{StringValueCStr}; array access via \texttt{RARRAY\_PTR} and \texttt{RARRAY\_CONST\_PTR}; and typed data access via \texttt{TypedData\_Get\_Struct} and \texttt{DATA\_PTR}.
+We define predicates that recognize common derivation operations in CRuby. Listing~\ref{lst:derivation_predicate} shows the structure of our derivation detection. We try to detect this by matching the underlying function call's function name.
 
 \begin{figure}[tb]
 \begin{lstlisting}[caption={CodeQL predicate for detecting pointer derivations (simplified).},label={lst:derivation_predicate}]
-predicate isDerivation(Expr source, Expr derived) {
-  // Direct macro invocations
-  exists(MacroInvocation mi |
-    mi.getMacroName() in [
-      "RSTRING_PTR", "RSTRING_END",
-      "RARRAY_PTR", "RARRAY_CONST_PTR",
-      "DATA_PTR"
-    ] and
-    source = mi.getExpr().(FunctionCall).getArgument(0) and
-    derived = mi.getExpr()
-  )
-  or
-  // Function calls returning derived pointers
-  exists(FunctionCall fc |
-    fc.getTarget().getName() in [
-      "StringValuePtr", "StringValueCStr",
-      "rb_string_value_ptr"
-    ] and
-    source = fc.getArgument(0) and
-    derived = fc
-  )
+class InnerPointerTakingFunctionByName extends Function {
+  InnerPointerTakingFunctionByName() {
+    this.getName() in [
+        "RSTRING_PTR"
+        // Dedacted
+      ]
+  }
 }
 \end{lstlisting}
 \end{figure}
 
-This is necessarily an over-approximation: not all recognized APIs always produce unsafe pointers (e.g., when the result is immediately consumed), and some unsafe derivations may be missed if they use unmodeled patterns. However, the modeled set covers the most common and well-documented APIs in CRuby's extension interface.
+This is necessarily an over-approximation: not all recognized APIs always produce unsafe pointers, and some unsafe derivations may be missed if they use unmodeled patterns. However, the modeled set covers the most common and well-documented APIs in CRuby's extension interface.
 
 \subsubsection*{Computing GC Trigger Reachability}
 We identify GC-triggering functions through transitive reachability to CRuby's GC entry point \texttt{gc\_enter}. This is achieved using CodeQL's recursive predicate capability\cite{codeql_recursion}. Listing~\ref{lst:is_gc_trigger} shows the implementation.
@@ -118,7 +104,7 @@ class GcTriggerCall extends FunctionCall {
 This predicate computes the transitive closure of the call graph rooted at \texttt{gc\_enter}. It is a may-trigger approximation that intentionally errs on the side of reporting candidates, addressing the challenge that most CRuby functions can transitively reach GC. The recursive formulation leverages CodeQL's built-in memoization and fixed-point computation, making it efficient even for large call graphs. The result is cached in the database, so subsequent queries can reuse the computed trigger set.
 
 \subsubsection*{Detecting Existing Guards}
-GuardLint detects \texttt{RB\_GC\_GUARD} usage through two complementary mechanisms, as shown in Listing~\ref{lst:guard_detection}. The primary method uses CodeQL's \texttt{MacroInvocation} class\cite{codeql_macroinvocation} to identify macro invocations by name when this metadata is available in the database. As a fallback for configurations where macro names are not preserved, we additionally recognize the characteristic expansion pattern of the GNU-style implementation: the introduction of a local temporary named \texttt{rb\_gc\_guarded\_ptr} initialized with the address of the guarded \texttt{VALUE}. This dual approach makes detection robust across different preprocessing configurations.
+GuardLint detects \texttt{RB\_GC\_GUARD} usage through recognizing the characteristic expansion pattern of the GCC-style implementation: the introduction of a local temporary named \texttt{rb\_gc\_guarded\_ptr} initialized with the address of the guarded \texttt{VALUE}.
 
 \begin{figure}[tb]
 \begin{lstlisting}[caption={CodeQL predicate for detecting existing guards.},label={lst:guard_detection}]

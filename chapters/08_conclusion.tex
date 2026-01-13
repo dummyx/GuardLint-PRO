@@ -1,7 +1,7 @@
 \section{Conclusion}\label{sec:Conclusion}
 We presented GuardLint, a CodeQL-based analysis that flags likely missing \texttt{RB\_GC\_GUARD} directives in CRuby's C code. GuardLint identifies patterns where subordinate pointers into object-owned memory may outlive the visibility of their owning \texttt{VALUE} across GC-triggering calls, which can lead to use-after-free under certain compiler optimizations.
 
-On CRuby 3.4.5, GuardLint identified highly-likely missing guards, including the \texttt{ossl\_cipher\_update} case where a simulated aggressive optimization produced data corruption. While no crash was reproduced under standard build configurations, such patterns can become exploitable as compiler optimizations evolve. The analysis also flagged 265 potentially redundant guards, providing candidates for safe removal to reduce unnecessary runtime overhead.
+On CRuby 3.4.5, GuardLint identified a highly-likely missing guard in \texttt{ossl\_cipher\_update} where a simulated aggressive optimization produced data corruption. While no crash was reproduced under standard build configurations, such patterns can become exploitable as compiler optimizations evolve. The analysis also flagged 265 potentially redundant guards, providing candidates for safe removal to reduce unnecessary runtime overhead.
 
 From a practical standpoint, GuardLint demonstrates that query-based static analysis can systematically surface suspicious patterns for human review in a large codebase. The manageable report size (232 candidates from over 23{,}000 \texttt{VALUE} variables) makes manual inspection feasible, and the ability to identify both missing and redundant guards supports both defensive hardening and performance-oriented refactoring.
 
