@@ -30,6 +30,7 @@ Fourth, CodeQL provides built-in support for C/C++ control-flow analysis, includ
 
 Fifth, CodeQL's AST representation of preprocessed code allows detection of \texttt{RB\_GC\_GUARD} usage (R5) by recognizing the characteristic expansion pattern---specifically, the declaration of a local variable named \texttt{rb\_gc\_guarded\_ptr}.
 
+\iffalse
 Table~\ref{tab:tool_comparison} summarizes how each approach addresses the challenging requirements.
 
 \begin{table}[ht]
@@ -49,6 +50,8 @@ CodeQL             & Built-in  & Native  & Built-in \\
 \bottomrule
 \end{tabular}
 \end{table}
+\fi
+
 
 \subsection{Query Implementation}\label{sec:detection_algorithm}
 
@@ -63,7 +66,7 @@ where $\xrightarrow{CFG^*}$ denotes zero or more control-flow steps and $\xright
 Listing~\ref{lst:running_example} illustrates a buggy pattern. The local variable \texttt{str} is used to derive a pointer \texttt{ptr} on line 3. The last \texttt{VALUE}-level access to \texttt{str} occurs on line 4 via \texttt{RSTRING\_LEN}. A GC-triggering call occurs on line 6 (\texttt{rb\_str\_new}), after which \texttt{ptr} is used on line 8. Because \texttt{str} has no access after the trigger and no explicit guard, an optimizing compiler may treat \texttt{str} as dead at line 6, potentially causing \texttt{ptr} to become a dangling pointer.
 
 \begin{figure}[tb]
-\begin{lstlisting}[caption={Running example: a buggy pattern in CRuby extension code.},label={lst:running_example}]
+\begin{lstlisting}[caption={A buggy example.},label={lst:running_example}]
 static VALUE process_data(VALUE input) {
     VALUE str = rb_funcall(input, rb_intern("to_s"), 0);
     char *ptr = RSTRING_PTR(str);     // derivation

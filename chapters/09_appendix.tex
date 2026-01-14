@@ -1,61 +1,10 @@
 \appendix
-\section{Additional Derived-Pointer Examples}\label{app:derived_pointers}
-
-This appendix presents additional examples of object-owned memory and subordinate pointers in CRuby, supplementing the string example in Section~\ref{sec:Background}.
-
-\subsection*{Arrays}
-Arrays similarly have an object header plus an element store.  CRuby may embed a small
-number of elements directly in the object, or it may use a separate buffer referenced
-by a pointer field (conceptually \texttt{ptr} in \texttt{struct RArray}).\footnote{\url{https://docs.ruby-lang.org/capi/en/master/dd/d8b/struct_r_array.html}
-(describes embedded elements vs.\ heap-backed arrays and the \texttt{ptr} field).}
-
-When code needs a raw \texttt{VALUE *} pointing to the contiguous element buffer,
-CRuby provides APIs and macros such as \texttt{RARRAY\_CONST\_PTR} and the scoped
-\texttt{RARRAY\_PTR\_USE} wrapper.  \texttt{RARRAY\_PTR\_USE} makes the ``raw pointer
-region'' explicit and delegates setup/teardown to internal helpers (Listing~\ref{lst:rarray_ptr_use}).
-This scoping is important in practice because arrays can share storage and can change
-representation as they grow or as operations demand copies; treating a raw
-\texttt{VALUE *} as a long-lived stable pointer is therefore brittle.
-
-\begin{figure}[tb]
-\begin{lstlisting}[caption={Scoped raw-pointer access for arrays via \texttt{RARRAY\_PTR\_USE} (from \texttt{rarray.h} documentation).},label={lst:rarray_ptr_use}]
-const VALUE ary = rb_eval_string("[...]");
-const int len = RARRAY_LENINT(ary);
-
-RARRAY_PTR_USE(ary, ptr, {
-  rb_funcallv(rb_stdout, rb_intern("write"), len, ptr);
-});
-\end{lstlisting}
-\end{figure}
-
-\subsection*{Typed Data}
-Beyond core containers, a common ``object-owned memory'' pattern is \texttt{T\_DATA}
-(typed data), where a Ruby object owns a pointer to an extension-defined C struct.
-The ownership contract is described by an \texttt{rb\_data\_type\_t} that supplies
-callbacks (notably \texttt{dfree}) that the GC invokes when the wrapper object is
-collected.  The pointer is extracted with \texttt{TypedData\_Get\_Struct}.\footnote{\url{https://docs.ruby-lang.org/en/3.1/extension_rdoc.html} (sections
-``Encapsulate C Data into a Ruby Object'' and \texttt{TypedData\_Get\_Struct}).}
-From the perspective of this paper, the extracted \texttt{struct *} is a derived
-pointer exactly like \texttt{RSTRING\_PTR}: it is valid only while the owning
-\texttt{VALUE} remains live.
 
 \section{Source Code of \texttt{ossl\_cipher\_update}}\label{app:ossl_cipher_update}
 Quoted from CRuby v3.4.5.\footnote{\url{https://github.com/ruby/ruby/blob/20cda200d3ce092571d0b5d342dadca69636cb0f/ext/openssl/ossl_cipher.c#L372}}
 
-%\begin{figure}[tb]
-\begin{lstlisting}[caption={Source code of \texttt{ossl\_cipher\_update}},label={lst:ossl_cipher_update_full}]
-	    /*
- *  call-seq:
- *     cipher.update(data [, buffer]) -> string or buffer
- *
- *  Encrypts data in a streaming fashion. Hand consecutive blocks of data
- *  to the #update method in order to encrypt it. Returns the encrypted
- *  data chunk. When done, the output of Cipher#final should be additionally
- *  added to the result.
- *
- *  If _buffer_ is given, the encryption/decryption result will be written to
- *  it. _buffer_ will be resized automatically.
- */
+\begin{lstlisting}[label={lst:ossl_cipher_update_full}]
+// Comments omitted
 static VALUE
 ossl_cipher_update(int argc, VALUE *argv, VALUE self)
 {
@@ -74,17 +23,6 @@ ossl_cipher_update(int argc, VALUE *argv, VALUE self)
     in_len = RSTRING_LEN(data);
     GetCipher(self, ctx);
 
-    /*
-     * As of OpenSSL 3.2, there is no reliable way to determine the required
-     * output buffer size for arbitrary cipher modes.
-     * https://github.com/openssl/openssl/issues/22628
-     *
-     * in_len+block_size is usually sufficient, but AES key wrap with padding
-     * ciphers require in_len+15 even though they have a block size of 8 bytes.
-     *
-     * Using EVP_MAX_BLOCK_LENGTH (32) as a safe upper bound for ciphers
-     * currently implemented in OpenSSL, but this can change in the future.
-     */
     if (in_len > LONG_MAX - EVP_MAX_BLOCK_LENGTH) {
 	ossl_raise(rb_eRangeError,
 		   "data too big to make output buffer: %ld bytes", in_len);
@@ -109,13 +47,11 @@ ossl_cipher_update(int argc, VALUE *argv, VALUE self)
     return str;
 }
 \end{lstlisting}
-%\end{figure}
 
 \section{Source code of \texttt{ruby\_brace\_expand}}\label{app:ruby_brace_expand}
 Quoted from CRuby v3.4.5.\footnote{\url{https://github.com/ruby/ruby/blob/20cda200d3ce092571d0b5d342dadca69636cb0f/dir.c#L3193}}
 
-\begin{figure}[tb]
-\begin{lstlisting}[caption={Source code of \texttt{ruby\_brace\_expand}},label={lst:ruby_brace_expand_full}]
+\begin{lstlisting}[label={lst:ruby_brace_expand_full}]
 	static int
 	ruby_brace_expand(const char *str, int flags, ruby_glob_func *func, VALUE arg,
 	                  rb_encoding *enc, VALUE var)
@@ -176,4 +112,3 @@ Quoted from CRuby v3.4.5.\footnote{\url{https://github.com/ruby/ruby/blob/20cda2
     return status;
 }
 \end{lstlisting}
-\end{figure}

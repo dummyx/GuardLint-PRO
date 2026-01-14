@@ -2,7 +2,7 @@
 
 This section describes the memory management model and guard mechanism in CRuby. We first explain how Ruby objects own native memory regions and how subordinate pointers are obtained from them. We then describe the compiler optimizations that can shorten the lifetime of owning references, and CRuby's conservative scanning strategy. Finally, we present the \texttt{RB\_GC\_GUARD} mechanism and discuss why correct placement is both critical and difficult.
 
-\subsection{Subordinate Memory and Subordinate Pointers in CRuby}
+\subsection{Subordinate Memory in CRuby}
 Many CRuby objects consist of a small GC-managed ``header'' (the Ruby object itself)
 plus an additional region of native memory that stores the object's payload.  The GC
 tracks the header as a Ruby object, but the payload typically resides in memory areas managed by CRuby's runtime and reclaimed when the owning object is reclaimed.  We call such payload regions \emph{subordinate memory areas}.
@@ -14,16 +14,6 @@ which returns a \texttt{char *} pointing to the string's bytes.
 % Importantly, Ruby strings are byte sequences and do not promise a terminating NUL byte; if a C string is required, extension authors are expected to use coercion helpers such as \texttt{StringValueCStr} (which ensures a terminating NUL and rejects embedded NULs).%
 % \footnote{\url{https://docs.ruby-lang.org/en/3.1/extension_rdoc.html} (see the discussion of \texttt{StringValue}, \texttt{StringValuePtr}, and \texttt{StringValueCStr}).}
 % Internally, CRuby strings may store their bytes either in an embedded area (for short strings) or in a separately allocated heap buffer.  \texttt{RSTRING\_PTR} selects between these representations (simplified in Listing~\ref{lst:rstring_ptr_impl}). This matters because an embedded string's bytes live \emph{inside} the owning object, while a heap string's bytes live in a separate allocation.
-
-\begin{figure}[tb]
-\begin{lstlisting}[caption={How \texttt{RSTRING\_PTR} selects embedded vs.\ heap storage (simplified from \texttt{rstring.h}).},label={lst:rstring_ptr_impl}]
-static inline char *RSTRING_PTR(VALUE str) {
-  return RB_FL_TEST_RAW(str, RSTRING_NOEMBED)
-    ? RSTRING(str)->as.heap.ptr    /* heap-backed */
-    : RSTRING(str)->as.embed.ary;  /* embedded */
-}
-\end{lstlisting}
-\end{figure}
 
 \subsubsection*{Subordinate Accessing Example}
 Subordinate pointers are the standard way C code accesses Ruby object data.  Listing~\ref{lst:derived_ptr_pattern} shows a typical pattern: obtain a Ruby string and derive a pointer to its bytes via \texttt{RSTRING\_PTR}.  This pattern pervades both the CRuby interpreter and C extensions.
@@ -73,7 +63,7 @@ Second, to reduce stack frame size, compilers may reuse stack slots for locals w
 We confirmed this effect by compiling CRuby 3.4.5 and inspecting \texttt{wmap\_foreach\_i} in \texttt{weakmap.c}, which copies two \texttt{VALUE}s (\texttt{k}, \texttt{v}) from a \texttt{weakmap\_entry} and calls a callback that may trigger GC.  With \texttt{RB\_GC\_GUARD} present, both GCC 15.2.1 and Clang 21.1.6 materialize \texttt{v} in a stack slot before the call (so the macro can take \texttt{\&(v)}) and emit a post-call load from that slot.  When we remove the \texttt{RB\_GC\_GUARD} calls, the compilers no longer need \texttt{v} as a live local across the callback: they perform the \texttt{UNDEF\_P} check directly against \texttt{entry->val} and emit no spill or post-call load for \texttt{v}.  Disabling sibling-call optimization (e.g., \texttt{-fno-optimize-sibling-calls}) removes the tail jump but does not restore the root; with sibling-call optimization enabled (the default at \texttt{-O2}/\texttt{-O3}), both compilers may additionally emit a tail call that deallocates the caller frame before entering the callback.
 
 \begin{figure}[tb]
-\begin{lstlisting}[caption={Disassembly results (x86\_64, \texttt{-O3 -fno-optimize-sibling-calls})},label={lst:asm_wmap_foreach_i}]
+\begin{lstlisting}[caption={Disassembly results},label={lst:asm_wmap_foreach_i}]
 ; wmap_foreach_i (weakmap.c), x86_64
 
 ; GCC 15.2.1, with RB_GC_GUARD:
