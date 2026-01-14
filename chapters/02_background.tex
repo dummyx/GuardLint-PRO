@@ -25,30 +25,16 @@ static inline char *RSTRING_PTR(VALUE str) {
 \end{lstlisting}
 \end{figure}
 
-Similar derived-pointer patterns exist for arrays (\texttt{RARRAY\_PTR\_USE}) and typed data (\texttt{TypedData\_Get\_Struct}); these are described in Appendix~\ref{app:derived_pointers}.
-
-\subsubsection*{Two Constraints on Subordinate Pointers}
-Subordinate pointers impose two distinct constraints. First, the owning object must remain live: if the owning \texttt{VALUE} becomes unreachable at a GC point, the GC may reclaim the object and its payload, turning any subordinate pointer into a dangling pointer. Second, the payload storage must remain stable: even if the owning object remains live, the payload storage can change when the object is modified or when CRuby enforces representation invariants. For strings, \texttt{rb\_str\_modify} explicitly prepares a string for mutation and may ensure a dedicated backend storage (i.e., detach from shared storage), while \texttt{rb\_str\_modify\_expand} additionally expands capacity.%
-\footnote{\url{https://docs.ruby-lang.org/capi/en/master/d8/d68/include_2ruby_2internal_2intern_2string_8h.html}
-(see \texttt{rb\_str\_modify} and \texttt{rb\_str\_modify\_expand}).} Consequently, a previously obtained \texttt{char *} from \texttt{RSTRING\_PTR} should be treated as ephemeral: after any operation that may mutate or resize the string, code should re-derive the pointer.
-
-\subsubsection*{A Real CRuby Pattern}
-Subordinate pointers frequently appear in ``bridge'' code that prepares Ruby arguments, extracts raw buffers, and then calls into a C library.  Listing~\ref{lst:ossl_derived_ptr} shows an excerpt from CRuby's OpenSSL extension (\texttt{ossl\_cipher\_update}), where a Ruby string is coerced via \texttt{StringValue} (which may replace the \texttt{VALUE} in-place), then a raw pointer and length are extracted and passed to OpenSSL.  This is representative of many CRuby call sites: obtain a raw buffer, make additional Ruby calls (often allocating), and finally consume the raw pointer.
+\subsubsection*{Subordinate Accessing Example}
+Subordinate pointers are the standard way C code accesses Ruby object data.  Listing~\ref{lst:derived_ptr_pattern} shows a typical pattern: obtain a Ruby string and derive a pointer to its bytes via \texttt{RSTRING\_PTR}.  This pattern pervades both the CRuby interpreter and C extensions.
 
 \begin{figure}[tb]
-\begin{lstlisting}[caption={Subordinate pointers used as OpenSSL input/output buffers (excerpt; full listing in Appendix~\ref{app:ossl_cipher_update}).},label={lst:ossl_derived_ptr}]
-VALUE data, str;
-rb_scan_args(argc, argv, "11", &data, &str);
-
-StringValue(data); /* may replace `data` with data.to_str() */
-unsigned char *in = (unsigned char *)RSTRING_PTR(data);
-long in_len = RSTRING_LEN(data);
-
-/* ... allocate/resize output Ruby string `str` ... */
-
-ossl_cipher_update_long(ctx,
-  (unsigned char *)RSTRING_PTR(str), &out_len,
-  in, in_len);
+\begin{lstlisting}[caption={Typical subordinate pointer access pattern.},label={lst:derived_ptr_pattern}]
+VALUE path = rb_iseq_path(iseq);
+const char *ptr = RSTRING_PTR(path);
+long len = RSTRING_LEN(path);
+/* ptr now points to path's bytes; use in C operations */
+memcmp(ptr, "-e", 2);
 \end{lstlisting}
 \end{figure}
 
