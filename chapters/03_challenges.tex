@@ -28,7 +28,7 @@ Among these five requirements, three present significant technical challenges th
 Identifying GC-triggering functions requires computing the transitive closure of the call graph rooted at CRuby's GC entry point \texttt{gc\_enter}. The Ruby runtime is deeply interconnected, and most non-trivial operations can transitively reach the GC. A simple heuristic (e.g., ``only \texttt{rb\_gc} triggers GC'') would miss the vast majority of real hazards, since object allocation, method dispatch, and string operations may all trigger GC when memory pressure is high. Computing this transitive closure efficiently over a large call graph requires recursive query evaluation with proper memoization.
 
 \subsubsection*{Challenge of R3: Tracking Ownership Bindings.}
-Subordinate pointers are obtained through many different APIs and macros, each with different signatures and expansion patterns (Table~\ref{tab:derivation_patterns}). The analyzer must not only recognize these patterns but also maintain the logical binding between each derived pointer and its owning \texttt{VALUE} throughout the analysis. This binding must persist across the control-flow analysis in R4, requiring the analyzer to correlate information from different program points.
+Subordinate pointers are obtained through many different APIs, each with different signatures and expansion patterns (Table~\ref{tab:derivation_patterns}). The analyzer must not only recognize these patterns but also maintain the logical binding between each derived pointer and its owning \texttt{VALUE} throughout the analysis. This binding must persist across the control-flow analysis in R4, requiring the analyzer to correlate information from different program points.
 
 \begin{table}[ht]
 \centering
