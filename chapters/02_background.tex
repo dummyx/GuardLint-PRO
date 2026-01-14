@@ -2,14 +2,14 @@
 
 This section describes the memory management model and guard mechanism in CRuby. We first explain how Ruby objects own native memory regions and how subordinate pointers are obtained from them. We then describe the compiler optimizations that can shorten the lifetime of owning references, and CRuby's conservative scanning strategy. Finally, we present the \texttt{RB\_GC\_GUARD} mechanism and discuss why correct placement is both critical and difficult.
 
-\subsection{Subordinate Memory and subordinate pointers in CRuby}
+\subsection{Subordinate Memory and Subordinate Pointers in CRuby}
 Many CRuby objects consist of a small GC-managed ``header'' (the Ruby object itself)
 plus an additional region of native memory that stores the object's payload.  The GC
 tracks the header as a Ruby object, but the payload typically resides in memory areas managed by CRuby's runtime and reclaimed when the owning object is reclaimed.  We call such payload regions \emph{subordinate memory areas}.
 
-A \emph{subordinate pointer} is a raw C pointer that points into subordinate memory.  It is \emph{not} a Ruby object and therefore is not treated as a GC root.  Subordinate pointers are pervasive in the interpreter and in C extensions because they are the conventional way to pass access Ruby payloads. However, because they are ordinary C pointers, their validity depends on the liveness of the owning Ruby object.
+A \emph{subordinate pointer} is a raw C pointer that points into subordinate memory.  It is \emph{not} a Ruby object and therefore is not treated as a GC root.  Subordinate pointers are pervasive in the interpreter and in C extensions because they are the conventional way to access Ruby payloads. However, because they are ordinary C pointers, their validity depends on the liveness of the owning Ruby object.
 
-For example, in the case of strings, the standard subordinate pointer derivating operation is \texttt{RSTRING\_PTR(str)},
+For example, in the case of strings, the standard subordinate pointer derivation operation is \texttt{RSTRING\_PTR(str)},
 which returns a \texttt{char *} pointing to the string's bytes.  
 % Importantly, Ruby strings are byte sequences and do not promise a terminating NUL byte; if a C string is required, extension authors are expected to use coercion helpers such as \texttt{StringValueCStr} (which ensures a terminating NUL and rejects embedded NULs).%
 % \footnote{\url{https://docs.ruby-lang.org/en/3.1/extension_rdoc.html} (see the discussion of \texttt{StringValue}, \texttt{StringValuePtr}, and \texttt{StringValueCStr}).}
@@ -36,7 +36,7 @@ Subordinate pointers impose two distinct constraints. First, the owning object m
 Subordinate pointers frequently appear in ``bridge'' code that prepares Ruby arguments, extracts raw buffers, and then calls into a C library.  Listing~\ref{lst:ossl_derived_ptr} shows an excerpt from CRuby's OpenSSL extension (\texttt{ossl\_cipher\_update}), where a Ruby string is coerced via \texttt{StringValue} (which may replace the \texttt{VALUE} in-place), then a raw pointer and length are extracted and passed to OpenSSL.  This is representative of many CRuby call sites: obtain a raw buffer, make additional Ruby calls (often allocating), and finally consume the raw pointer.
 
 \begin{figure}[tb]
-\begin{lstlisting}[caption={subordinate pointers used as OpenSSL input/output buffers (excerpt; full listing in Appendix~\ref{app:ossl_cipher_update}).},label={lst:ossl_derived_ptr}]
+\begin{lstlisting}[caption={Subordinate pointers used as OpenSSL input/output buffers (excerpt; full listing in Appendix~\ref{app:ossl_cipher_update}).},label={lst:ossl_derived_ptr}]
 VALUE data, str;
 rb_scan_args(argc, argv, "11", &data, &str);
 
@@ -62,7 +62,7 @@ CRuby uses conservative scanning for GC roots. Under this strategy, whether a Ru
 
 
 \subsection{The \texttt{RB\_GC\_GUARD} Mechanism}
-To prevent subordinate pointers from outliving their owning \texttt{VALUE} under these optimizations, CRuby exposes the macro \texttt{RB\_GC\_GUARD} as an explicit optimization barrier. In the case of GCC \texttt{RB\_GC\_GUARD} is implemented by creating a \texttt{volatile VALUE *} pointing to \texttt{v} and issuing an empty inline assembly statement with a memory constraint, making the access appear as an observable side effect that must not be optimized away. CRuby's documentation recommends \texttt{RB\_GC\_GUARD} over using \texttt{volatile} directly, because the macro localizes the optimization impact to the guard site and can be specialized per compiler/architecture when necessary\cite{ruby_capi_rb_gc_guard}. The implementation \texttt{RB\_GC\_GUARD} for GCC in CRuby is shown in Listing~\ref{lst:rbgcguard}.
+To prevent subordinate pointers from outliving their owning \texttt{VALUE} under these optimizations, CRuby exposes the macro \texttt{RB\_GC\_GUARD} as an explicit optimization barrier. In the case of GCC, \texttt{RB\_GC\_GUARD} is implemented by creating a \texttt{volatile VALUE *} pointing to \texttt{v} and issuing an empty inline assembly statement with a memory constraint, making the access appear as an observable side effect that must not be optimized away. CRuby's documentation recommends \texttt{RB\_GC\_GUARD} over using \texttt{volatile} directly, because the macro localizes the optimization impact to the guard site and can be specialized per compiler/architecture when necessary~\cite{ruby_capi_rb_gc_guard}. The implementation of \texttt{RB\_GC\_GUARD} for GCC in CRuby is shown in Listing~\ref{lst:rbgcguard}.
 
 \begin{figure}[tb]
 \begin{lstlisting}[caption={RB\_GC\_GUARD's Definition (GCC)},label={lst:rbgcguard}]
@@ -135,7 +135,7 @@ printf("%s\n", ptr);
 
 Manual \texttt{RB\_GC\_GUARD} placement is error-prone because developers must identify subordinate pointer derivations, potential GC triggers, and the temporal coverage needed for the subordinate pointer's lifetime.  GC may not run even when a trigger site is reached, making bugs hard to reproduce. We refer to this as the Guard Problem.
 
-Moreover,Bugs caused by omissions of guards are difficult to debug because GC timing is non-deterministic. A omitted guard creates a \emph{possibility} of use-after-free, but a crash only occurs if a GC cycle is triggered at the buggy point \emph{and} the compiler has optimized away the root reference. As a result, code may pass testing for years and fail only under certain build configurations or high memory pressure, making these bugs hard to reproduce and diagnose.
+Moreover, bugs caused by omitted guards are difficult to debug because GC timing is non-deterministic. An omitted guard creates a \emph{possibility} of use-after-free, but a crash only occurs if a GC cycle is triggered at the buggy point \emph{and} the compiler has optimized away the root reference. As a result, code may pass testing for years and fail only under certain build configurations or high memory pressure, making these bugs hard to reproduce and diagnose.
 
 Traditional static analyses for use-after-free in C/C++~\cite{static_analysis_use_after_free_cpp,spatio_temporal_context_reduction,static_analysis_dangling_pointer} do not directly address this conservative-GC setting.
 

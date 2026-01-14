@@ -98,42 +98,42 @@ class ValueVariable extends LocalVariable {
 \end{lstlisting}
 \end{figure}
 
-Also, pointer derivation operation, GC triggering functions, and other basic elements that's needed for the queries, are defined as classes in this manner. This could help analysis performance in a way that limits the upper bound on the size of a relation
+Similarly, pointer derivation operations, GC-triggering functions, and other elements needed by the queries are defined as classes. Defining specific types in this manner limits the upper bound on the size of a relation, helping the query optimizer be more effective~\cite{codeql_specific_types}.
 
 \subsubsection*{Pointer Derivations and Subordinate Relation Binding}
-We define predicates that recognize common derivation operations in CRuby. Listing~\ref{lst:derivation_predicate} shows the structure of our derivation detection. We try to detect this by matching the underlying function call's function name.
+We define predicates that recognize common derivation operations in CRuby. Listing~\ref{lst:derivation_predicate} shows the structure of our derivation detection, which matches against the underlying function name.
 
 \begin{figure}[tb]
-\begin{lstlisting}[caption={CodeQL class definition for pointer derivation functions(simplified).},label={lst:derivation_predicate}]
-class InnerPointerTakingFunctionByName extends Function {
-  InnerPointerTakingFunctionByName() {
+\begin{lstlisting}[caption={CodeQL class definition for pointer derivation functions (simplified).},label={lst:derivation_predicate}]
+class SubordinatePointerDerivationFunctionByName extends Function {
+  SubordinatePointerDerivationFunctionByName() {
     this.getName() in [
         "RSTRING_PTR"
-        // Dedacted
+        // Redacted
       ]
   }
 }
 \end{lstlisting}
 \end{figure}
 
-This class would furtherly be used for composing the class of actual derivation function calls. Then the logical relation between the owning objects and the subordinate pointers could be represent as: (1) A owning object (\texttt{VALUE}) has been passed to a pointer derivation function call. (2) The return value assigns to a variable of pointer types. (3) Then assigned pointer type value would be considered a subordinate pointer of that owning object. Listing \ref{lst:derivation_relation} shows the actual implementation.
+This class is then used to compose the class of actual derivation function calls. The logical relation between owning objects and subordinate pointers can be represented as: (1) an owning object (\texttt{VALUE}) is passed to a pointer derivation function call, (2) the return value is assigned to a pointer-type variable, and (3) the assigned pointer is considered a subordinate pointer of that owning object. Listing~\ref{lst:derivation_relation} shows the implementation.
 
 \begin{figure}[tb]
 \begin{lstlisting}[caption={Predicate for the relation of owning object and the derived pointer.},label={lst:derivation_relation}]
-predicate hasInnerPointerAssignment(
-  ValueVariable v, PointerVariable innerPointer, ControlFlowNode innerPointerTaking
+predicate hasSubordinatePointerAssignment(
+  ValueVariable v, PointerVariable subordinatePointer, ControlFlowNode derivationSite
 ) {
   exists(Assignment assignment |
-    assignment.getLValue().getAChild*().(VariableAccess).getTarget() = innerPointer and
-    assignment.getRValue().getAChild*() instanceof InnerPointerTakingFunctionByNameCall and
+    assignment.getLValue().getAChild*().(VariableAccess).getTarget() = subordinatePointer and
+    assignment.getRValue().getAChild*() instanceof SubordinatePointerDerivationFunctionByNameCall and
     assignment
         .getRValue()
         .getAChild*()
-        .(InnerPointerTakingFunctionByNameCall)
+        .(SubordinatePointerDerivationFunctionByNameCall)
         .getAnArgument()
         .(ValueAccess)
         .getTarget() = v and
-    assignment = innerPointerTaking
+    assignment = derivationSite
   )
 }
 \end{lstlisting}
@@ -144,7 +144,7 @@ The binding is done by checking if such an assignment exists for each \texttt{VA
 % This is necessarily an over-approximation: not all recognized APIs always produce unsafe pointers, and some unsafe derivations may be missed if they use unmodeled patterns. However, the modeled set covers the most common and well-documented APIs in CRuby's extension interface.
 
 \subsubsection*{GC Triggering Functions}
-We identify GC-triggering functions through transitive reachability to CRuby's GC entry point \texttt{gc\_enter}. This is achieved using CodeQL's recursive predicate capability\cite{codeql_recursion}. Listing~\ref{lst:is_gc_trigger} shows the implementation.
+We identify GC-triggering functions through transitive reachability to CRuby's GC entry point \texttt{gc\_enter}. This is achieved using CodeQL's recursive predicate capability~\cite{codeql_recursion}. Listing~\ref{lst:is_gc_trigger} shows the implementation.
 
 \begin{figure}[tb]
 \begin{lstlisting}[caption={CodeQL predicate for GC trigger detection via call-graph reachability.},label={lst:is_gc_trigger}]
@@ -246,16 +246,16 @@ The main query structure combines these components. Listing~\ref{lst:missing_gua
 from ValueVariable v, Variable p,
      GcTriggerCall gtc,
      Expr pointerUsageAccess,
-     Expr innerPointerTaking
+     Expr derivationSite
 where
   needsGuard(v, p, gtc, pointerUsageAccess,
-             innerPointerTaking)
+             derivationSite)
   and not hasGuard(v)
 select v,
   "VALUE $@ may need RB_GC_GUARD: pointer derived at $@, " +
   "GC may trigger at $@, pointer used at $@.",
   v, v.getName(),
-  innerPointerTaking, "here",
+  derivationSite, "here",
   gtc, "this call",
   pointerUsageAccess, "here"
 \end{lstlisting}
