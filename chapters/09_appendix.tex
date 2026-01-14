@@ -42,7 +42,7 @@ pointer exactly like \texttt{RSTRING\_PTR}: it is valid only while the owning
 \section{Source Code of \texttt{ossl\_cipher\_update}}\label{app:ossl_cipher_update}
 Quoted from CRuby v3.4.5.\footnote{\url{https://github.com/ruby/ruby/blob/20cda200d3ce092571d0b5d342dadca69636cb0f/ext/openssl/ossl_cipher.c#L372}}
 
-\begin{figure}[tb]
+%\begin{figure}[tb]
 \begin{lstlisting}[caption={Source code of \texttt{ossl\_cipher\_update}},label={lst:ossl_cipher_update_full}]
 	    /*
  *  call-seq:
@@ -109,7 +109,7 @@ ossl_cipher_update(int argc, VALUE *argv, VALUE self)
     return str;
 }
 \end{lstlisting}
-\end{figure}
+%\end{figure}
 
 \section{Source code of \texttt{ruby\_brace\_expand}}\label{app:ruby_brace_expand}
 Quoted from CRuby v3.4.5.\footnote{\url{https://github.com/ruby/ruby/blob/20cda200d3ce092571d0b5d342dadca69636cb0f/dir.c#L3193}}

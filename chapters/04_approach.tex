@@ -164,22 +164,13 @@ The predicate checks that: (1) the GC trigger and derivation site are in the sam
 The main query structure combines these components. Listing~\ref{lst:missing_guard_ql} shows the missing guard detection query.
 
 \begin{figure}[tb]
-\begin{lstlisting}[caption={Main query for detecting missing guards.},label={lst:missing_guard_ql}]
-from ValueVariable v, Variable p,
-     GcTriggerCall gtc,
-     Expr pointerUsageAccess,
-     Expr derivationSite
+\begin{lstlisting}[caption={Main query for detecting omitted guards.},label={lst:missing_guard_ql}]
+from ValueVariable v, PointerVariable p, GcTriggerCall gtc,
+     PointerVariableAccess pointerUsageAccess, PointerDerivationAction derivationSite
 where
-  needsGuard(v, p, gtc, pointerUsageAccess,
-             derivationSite)
-  and not hasGuard(v)
-select v,
-  "VALUE $@ may need RB_GC_GUARD: pointer derived at $@, " +
-  "GC may trigger at $@, pointer used at $@.",
-  v, v.getName(),
-  derivationSite, "here",
-  gtc, "this call",
-  pointerUsageAccess, "here"
+  needsGuard(v, p, gtc, pointerUsageAccess, derivationSite) and not hasGuard(v)
+select v, derivationSite, gtc, pointerUsageAccess
+
 \end{lstlisting}
 \end{figure}
 
