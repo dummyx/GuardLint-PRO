@@ -28,7 +28,7 @@ Third, CodeQL's relational model naturally expresses the ownership binding betwe
 
 Fourth, CodeQL provides built-in support for C/C++ control-flow analysis, including \texttt{getASuccessor} and \texttt{getAPredecessor} relations over control-flow nodes. This enables the multi-entity ordering analysis required by R4 without implementing control-flow graph construction from scratch.
 
-Fifth, CodeQL preserves macro invocation metadata, allowing direct detection of \texttt{RB\_GC\_GUARD} usage (R5) rather than relying solely on expansion pattern matching.
+Fifth, CodeQL's AST representation of preprocessed code allows detection of \texttt{RB\_GC\_GUARD} usage (R5) by recognizing the characteristic expansion pattern---specifically, the declaration of a local variable named \texttt{rb\_gc\_guarded\_ptr}.
 
 Table~\ref{tab:tool_comparison} summarizes how each approach addresses the challenging requirements.
 
@@ -83,65 +83,10 @@ The query proceeds in four phases. In the first phase, we identify all local var
 
 We implemented GuardLint as a set of CodeQL queries.\footnote{Artifact: \url{https://github.com/dummyx/guardql/tree/e8e4ed62f5ec89bd663ac380dccd2c933a48186d}. The main queries used in this paper are \texttt{missing\_guards\_vo.ql}, \texttt{redundant\_guards.ql}, and \texttt{good\_guards.ql} under \texttt{codeql-custom-queries-cpp}. The custom library that's used by the query pack resides in lib\/ directory}
 
-\subsubsection*{Identifying VALUE Variables}
-The foundation of our analysis is identifying local variables of type \texttt{VALUE}. Listing~\ref{lst:value_variable_detection} shows the CodeQL class that captures this. The predicate handles both direct type declarations and typedef indirections.
+\subsubsection*{Identifying VALUE Variables and Pointer Derivations}
+The foundation of our analysis is identifying local variables of type \texttt{VALUE} and tracking their relationship to derived pointers. We define a CodeQL class \texttt{ValueVariable} that matches local variables whose type is \texttt{VALUE} (handling both direct declarations and typedef indirections). Defining specific types in this manner limits the upper bound on the size of a relation, helping the query optimizer be more effective~\cite{codeql_specific_types}.
 
-\begin{figure}[tb]
-\begin{lstlisting}[caption={CodeQL class for identifying \texttt{VALUE} variables.},label={lst:value_variable_detection}]
-class ValueVariable extends LocalVariable {
-  ValueVariable() {
-    this.getType().getName() = "VALUE"
-    or
-    this.getType().(TypedefType).getName() = "VALUE"
-  }
-}
-\end{lstlisting}
-\end{figure}
-
-Similarly, pointer derivation operations, GC-triggering functions, and other elements needed by the queries are defined as classes. Defining specific types in this manner limits the upper bound on the size of a relation, helping the query optimizer be more effective~\cite{codeql_specific_types}.
-
-\subsubsection*{Pointer Derivations and Subordinate Relation Binding}
-We define predicates that recognize common derivation operations in CRuby. Listing~\ref{lst:derivation_predicate} shows the structure of our derivation detection, which matches against the underlying function name.
-
-\begin{figure}[tb]
-\begin{lstlisting}[caption={CodeQL class definition for pointer derivation functions (simplified).},label={lst:derivation_predicate}]
-class SubordinatePointerDerivationFunctionByName extends Function {
-  SubordinatePointerDerivationFunctionByName() {
-    this.getName() in [
-        "RSTRING_PTR"
-        // Redacted
-      ]
-  }
-}
-\end{lstlisting}
-\end{figure}
-
-This class is then used to compose the class of actual derivation function calls. The logical relation between owning objects and subordinate pointers can be represented as: (1) an owning object (\texttt{VALUE}) is passed to a pointer derivation function call, (2) the return value is assigned to a pointer-type variable, and (3) the assigned pointer is considered a subordinate pointer of that owning object. Listing~\ref{lst:derivation_relation} shows the implementation.
-
-\begin{figure}[tb]
-\begin{lstlisting}[caption={Predicate for the relation of owning object and the derived pointer.},label={lst:derivation_relation}]
-predicate hasSubordinatePointerAssignment(
-  ValueVariable v, PointerVariable subordinatePointer, ControlFlowNode derivationSite
-) {
-  exists(Assignment assignment |
-    assignment.getLValue().getAChild*().(VariableAccess).getTarget() = subordinatePointer and
-    assignment.getRValue().getAChild*() instanceof SubordinatePointerDerivationFunctionByNameCall and
-    assignment
-        .getRValue()
-        .getAChild*()
-        .(SubordinatePointerDerivationFunctionByNameCall)
-        .getAnArgument()
-        .(ValueAccess)
-        .getTarget() = v and
-    assignment = derivationSite
-  )
-}
-\end{lstlisting}
-\end{figure}
-
-The binding is done by checking if such an assignment exists for each \texttt{VALUE} and pointer type variables.
-
-% This is necessarily an over-approximation: not all recognized APIs always produce unsafe pointers, and some unsafe derivations may be missed if they use unmodeled patterns. However, the modeled set covers the most common and well-documented APIs in CRuby's extension interface.
+For pointer derivations, we define predicates that recognize common derivation operations in CRuby by matching against function names such as \texttt{RSTRING\_PTR}, \texttt{RARRAY\_PTR}, and \texttt{TypedData\_Get\_Struct}. The logical binding between owning objects and subordinate pointers is established when: (1) an owning object (\texttt{VALUE}) is passed to a pointer derivation function call, (2) the return value is assigned to a pointer-type variable, and (3) the assigned pointer is considered a subordinate pointer of that owning object.
 
 \subsubsection*{GC Triggering Functions}
 We identify GC-triggering functions through transitive reachability to CRuby's GC entry point \texttt{gc\_enter}. This is achieved using CodeQL's recursive predicate capability~\cite{codeql_recursion}. Listing~\ref{lst:is_gc_trigger} shows the implementation.
@@ -174,62 +119,46 @@ GuardLint detects \texttt{RB\_GC\_GUARD} usage through recognizing the character
 \begin{figure}[tb]
 \begin{lstlisting}[caption={CodeQL predicate for detecting existing guards.},label={lst:guard_detection}]
 predicate hasGuard(ValueVariable v) {
-  // Primary: macro invocation metadata
-  exists(MacroInvocation mi |
-    mi.getMacroName() = "RB_GC_GUARD" and
-    mi.getExpr().getAChild*().(VariableAccess)
-      .getTarget() = v
-  )
-  or
-  // Fallback: characteristic expansion pattern
-  exists(LocalVariable guardPtr, AddressOfExpr addr |
-    guardPtr.getName() = "rb_gc_guarded_ptr" and
-    guardPtr.getInitializer().getExpr() = addr and
-    addr.getOperand().(VariableAccess).getTarget() = v
+  exists(VariableDeclarationEntry decl |
+    decl.getVariable()
+        .getInitializer()
+        .getExpr()
+        .(AddressOfExpr)
+        .getAnOperand()
+        .(VariableAccess)
+        .getTarget() = v and
+    decl.getVariable().getName() = "rb_gc_guarded_ptr"
   )
 }
 \end{lstlisting}
 \end{figure}
 
 \subsubsection*{Control-Flow Ordering Analysis}
-The core detection logic combines the above components with control-flow ordering constraints. We compute the last syntactic \texttt{VALUE}-level access to the owning variable along control-flow paths, using CodeQL's control-flow relations\cite{codeql_cpp_getapredecessor}. Listing~\ref{lst:ordering_constraints} shows the key predicates for establishing temporal ordering.
+The core detection logic combines the above components with control-flow ordering constraints. Listing~\ref{lst:needs_guard} shows the \texttt{needsGuard} predicate that captures the hazardous pattern.
 
 \begin{figure}[tb]
-\begin{lstlisting}[caption={CodeQL predicates for control-flow ordering constraints.},label={lst:ordering_constraints}]
-// Check if expr1 precedes expr2 in CFG
-predicate precedes(Expr expr1, Expr expr2) {
-  expr1.getASuccessor+() = expr2
-}
-
-// Find last VALUE-level access to v before a given point
-predicate isLastValueAccess(VariableAccess va,
-                            ValueVariable v,
-                            Expr beforePoint) {
-  va.getTarget() = v and
-  precedes(va, beforePoint) and
-  not exists(VariableAccess later |
-    later.getTarget() = v and
-    precedes(va, later) and
-    precedes(later, beforePoint)
-  )
-}
-
-// Core detection predicate
-predicate needsGuard(ValueVariable v,
-                     Variable p,
-                     GcTriggerCall trigger,
-                     Expr pointerUse,
-                     Expr derivation) {
-  isDerivation(v, derivation) and
-  derivation.getASuccessor*() = trigger and
-  trigger.getASuccessor+() = pointerUse and
-  pointerUse.getAChild*().(VariableAccess).getTarget() = p and
-  isLastValueAccess(_, v, trigger)
+\begin{lstlisting}[caption={CodeQL predicate for detecting variables that need guards.},label={lst:needs_guard}]
+predicate needsGuard(
+  ValueVariable v, PointerVariable subordinatePointer,
+  GcTriggerCall gtc, PointerVariableAccess pointerUsageAccess,
+  ControlFlowNode derivationSite
+) {
+  gtc.getControlFlowScope() = v.getParentScope*().(Function) and
+  gtc.getControlFlowScope() = derivationSite.getControlFlowScope() and
+  subordinatePointer != v and
+  pointerUsageAccess.getTarget() = subordinatePointer and
+  gtc.getASuccessor+() = pointerUsageAccess and
+  not exists(VariableAccess va |
+    va.getTarget() = v and
+    va = gtc.getASuccessor+() and
+    not isGuardAccess(va)
+  ) and
+  hasSubordinatePointerDerivation(v, subordinatePointer, derivationSite)
 }
 \end{lstlisting}
 \end{figure}
 
-A \texttt{VALUE} variable is flagged as needing a guard when a subordinate pointer $p$ is used after a modeled trigger site, the owning \texttt{VALUE} $v$ is not accessed after the trigger (so $v$ may be treated as dead by the compiler), and no explicit \texttt{RB\_GC\_GUARD} protects $v$ across the trigger.
+The predicate checks that: (1) the GC trigger and derivation site are in the same function scope as the \texttt{VALUE} variable, (2) the subordinate pointer is accessed after the GC trigger (via \texttt{getASuccessor+}), (3) there is no \texttt{VALUE}-level access after the trigger (excluding guard accesses), and (4) the subordinate pointer was derived from the \texttt{VALUE} variable.
 
 \subsubsection*{Main Query Structure}
 The main query structure combines these components. Listing~\ref{lst:missing_guard_ql} shows the missing guard detection query.
@@ -257,20 +186,4 @@ select v,
 Because the CFG represents one possible evaluation order out of those allowed by the C language specification and compiler, the analysis remains a conservative approximation rather than a compiler-precise liveness proof. Additionally, we conservatively treat passing a subordinate pointer as an argument as a potential use, though we do not fully analyze derived-pointer dereferences inside callees in the current configuration.
 
 \subsubsection*{Complementary Queries}
-In addition to the missing-guard query, GuardLint includes queries to identify \emph{matched guards} (existing \texttt{RB\_GC\_GUARD} invocations where the guarded variable satisfies \texttt{needsGuard}, representing guards that our model confirms as necessary) and \emph{potentially redundant guards} (existing guards where the guarded variable does \emph{not} satisfy \texttt{needsGuard}, which may be candidates for removal, though they could also represent defensive coding or protection against future code changes).
-
-\begin{figure}[tb]
-\begin{lstlisting}[caption={Query for detecting potentially redundant guards.},label={lst:redundant_guard_ql}]
-from ValueVariable v, MacroInvocation guard
-where
-  guard.getMacroName() = "RB_GC_GUARD" and
-  guard.getExpr().getAChild*().(VariableAccess)
-    .getTarget() = v and
-  not needsGuard(v, _, _, _, _)
-select guard,
-  "RB_GC_GUARD for $@ may be redundant under our model.",
-  v, v.getName()
-\end{lstlisting}
-\end{figure}
-
-These complementary queries support a practical workflow: developers can review matched guards for confidence, investigate missing guards for safety, and consider removing redundant guards for performance.
+In addition to the missing-guard query, GuardLint includes queries to identify \emph{matched guards} (existing \texttt{RB\_GC\_GUARD} invocations where the guarded variable satisfies \texttt{needsGuard}, representing guards that our model confirms as necessary) and \emph{potentially redundant guards} (existing guards where the guarded variable does \emph{not} satisfy \texttt{needsGuard}, which may be candidates for removal, though they could also represent defensive coding or protection against future code changes). These complementary queries support a practical workflow: developers can review matched guards for confidence, investigate missing guards for safety, and consider removing redundant guards for performance.

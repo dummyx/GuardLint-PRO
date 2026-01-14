@@ -55,23 +55,20 @@ CRuby comprises over 300,000 lines of C code with more than 23,000 \texttt{VALUE
 
 \subsection{Detecting Existing Guards}
 
-The \texttt{RB\_GC\_GUARD} mechanism is implemented as a macro that expands differently across compilers and configurations. Listing~\ref{lst:guard_expansions} shows how the same source-level guard can appear differently in preprocessed code.
+The \texttt{RB\_GC\_GUARD} mechanism is implemented as a macro that expands to a GCC statement expression in preprocessed code. Listing~\ref{lst:guard_expansions} shows the expansion pattern that our analyzer must recognize.
 
 \begin{figure}[tb]
-\begin{lstlisting}[caption={Different expansions of \texttt{RB\_GC\_GUARD} across configurations.},label={lst:guard_expansions}]
+\begin{lstlisting}[caption={Expansion of \texttt{RB\_GC\_GUARD} with GCC.},label={lst:guard_expansions}]
 // Source code:
 RB_GC_GUARD(str);
 
-// GNU expansion (typical):
+// Expansion:
 (*__extension__ ({
     volatile VALUE *rb_gc_guarded_ptr = &(str);
     __asm__("" : : "m"(rb_gc_guarded_ptr));
     rb_gc_guarded_ptr;
 }));
-
-// MSVC expansion (alternative):
-(*rb_gc_guarded_ptr(&(str)));
 \end{lstlisting}
 \end{figure}
 
-Reliably detecting whether a guard is present requires either access to macro invocation metadata or recognition of characteristic expansion patterns in the preprocessed code. The analyzer must handle both cases to be robust across build configurations.
+Reliably detecting whether a guard is present requires recognition of this characteristic expansion pattern in the preprocessed code, specifically the assignment to a \texttt{volatile} pointer named \texttt{rb\_gc\_guarded\_ptr}.

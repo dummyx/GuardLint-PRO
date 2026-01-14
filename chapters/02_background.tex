@@ -62,19 +62,16 @@ CRuby uses conservative scanning for GC roots. Under this strategy, whether a Ru
 
 
 \subsection{The \texttt{RB\_GC\_GUARD} Mechanism}
-To prevent subordinate pointers from outliving their owning \texttt{VALUE} under these optimizations, CRuby exposes the macro \texttt{RB\_GC\_GUARD} as an explicit optimization barrier. In the case of GCC, \texttt{RB\_GC\_GUARD} is implemented by creating a \texttt{volatile VALUE *} pointing to \texttt{v} and issuing an empty inline assembly statement with a memory constraint, making the access appear as an observable side effect that must not be optimized away. CRuby's documentation recommends \texttt{RB\_GC\_GUARD} over using \texttt{volatile} directly, because the macro localizes the optimization impact to the guard site and can be specialized per compiler/architecture when necessary~\cite{ruby_capi_rb_gc_guard}. The implementation of \texttt{RB\_GC\_GUARD} for GCC in CRuby is shown in Listing~\ref{lst:rbgcguard}.
+To prevent subordinate pointers from outliving their owning \texttt{VALUE} under these optimizations, CRuby exposes the macro \texttt{RB\_GC\_GUARD} as an explicit optimization barrier. With GCC, \texttt{RB\_GC\_GUARD} is implemented by creating a \texttt{volatile VALUE *} pointing to \texttt{v} and issuing an empty inline assembly statement with a memory constraint, making the access appear as an observable side effect that must not be optimized away. CRuby's documentation recommends \texttt{RB\_GC\_GUARD} over using \texttt{volatile} directly, because the macro localizes the optimization impact to the guard site~\cite{ruby_capi_rb_gc_guard}. The implementation of \texttt{RB\_GC\_GUARD} for GCC is shown in Listing~\ref{lst:rbgcguard}. Since the CodeQL database used in our analysis is built with GCC, our analysis considers only this implementation.
 
 \begin{figure}[tb]
 \begin{lstlisting}[caption={RB\_GC\_GUARD's Definition (GCC)},label={lst:rbgcguard}]
-#ifdef __GNUC__
 #define RB_GC_GUARD(v) \
     (*__extension__ ({ \
         volatile VALUE *rb_gc_guarded_ptr = &(v); \
         __asm__("" : : "m"(rb_gc_guarded_ptr)); \
         rb_gc_guarded_ptr; \
     }))
-// ... (other compiler implementations omitted)
-#endif
 \end{lstlisting}
 \end{figure}
 
