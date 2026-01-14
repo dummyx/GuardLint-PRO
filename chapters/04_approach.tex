@@ -4,17 +4,55 @@ This section presents our approach to detecting missing \texttt{RB\_GC\_GUARD} d
 
 \subsection{Tool Selection}\label{sec:tool_selection}
 
-Given the challenges outlined in Section~\ref{sec:Challenges}, we considered several approaches for implementing the static analysis. The ideal tool must support efficient querying over a large codebase, provide access to both syntactic (AST) and semantic (control-flow, type) information, enable recursive queries for computing transitive closures, and allow declarative specification of complex patterns.
+Given the requirements outlined in Section~\ref{sec:Requirements}, we considered several approaches for implementing the static analysis. The ideal tool must support efficient querying over a large codebase, provide access to both syntactic (AST) and semantic (control-flow, type) information, enable recursive queries for computing transitive closures, and allow declarative specification of complex patterns. As discussed in Section~\ref{sec:Requirements}, requirements R1 (recursive call-graph reachability), R3 (ownership binding tracking), and R4 (multi-entity control-flow ordering) are particularly challenging and strongly influence tool selection.
 
-Traditional approaches to static analysis include custom analyzers written in general-purpose languages, pattern-matching tools such as Coccinelle\cite{UgawaFujimoto2019PRO}, and compiler-integrated analyses. Custom analyzers offer maximum flexibility but require substantial engineering effort to parse C code, construct control-flow graphs, and implement efficient indexing. Pattern-matching tools excel at syntactic transformations but lack the semantic analysis needed to track control-flow ordering and compute call-graph reachability. Compiler-integrated analyses (e.g., GCC plugins, Clang checkers) provide rich semantic information but are tightly coupled to specific compiler versions and optimization pipelines.
+\paragraph{Alternative Approaches and Their Limitations.}
+We evaluated several categories of static analysis tools before selecting our implementation platform.
 
-We selected CodeQL as our implementation platform for several reasons. First, CodeQL represents source code as a queryable relational database, with pre-computed indices over types, names, and structural properties\cite{ql_ecoop}. This enables efficient lookups that avoid the need for full enumeration. Second, CodeQL provides built-in support for C/C++ analysis, including AST matching, control-flow analysis functionability, and type inference. Third, the QL language supports recursive predicates \cite{codeql_recursion}, which is essential for computing transitive call-graph reachability. Fourth, CodeQL's declarative query language allows patterns to be specified at a high level of abstraction while the query optimizer handles efficient execution.
+\emph{Semantic pattern-matching tools} such as Coccinelle~\cite{UgawaFujimoto2019PRO} excel at matching code patterns against syntax, semantics, and control flow. Coccinelle is widely used in Linux kernel development for API evolution and defect detection. However, Coccinelle does not track state automatically across the program and lacks built-in support for computing call-graph reachability. While limited state tracking can be added through Python or OCaml snippets, implementing recursive transitive closure computation (required for R1) would require substantial custom infrastructure. Furthermore, Coccinelle's design focuses on local pattern matching rather than the multi-entity relational queries needed for R3 and R4.
 
-These capabilities align well with the challenges identified in Section~\ref{sec:Challenges}: indexed database access addresses scale (C1), built-in macro and type support addresses derivation diversity (C2), recursive queries address GC trigger  (C3), macro metadata addresses guard detection (C4).
+\emph{Compiler-integrated analyzers} such as the Clang Static Analyzer provide rich semantic information through path-sensitive, interprocedural analysis based on symbolic execution. The Clang Static Analyzer constructs an ``exploded graph'' that tracks program state along execution paths, making it effective for detecting bugs like null pointer dereferences and use-after-free. However, this approach faces scalability challenges for whole-program analysis: the state space can grow exponentially, and the analyzer typically bounds exploration depth to remain tractable. More fundamentally, the Clang Static Analyzer is designed around specific bug patterns with custom checkers, rather than declarative queries over program structure. Implementing our analysis would require writing a custom checker in C++ that manually manages the state machine for tracking ownership bindings across control-flow paths---a significant engineering effort compared to a declarative specification.
+
+\emph{GCC's static analyzer} (\texttt{-fanalyzer}) similarly provides interprocedural data-flow analysis but lacks extension mechanisms for custom analyses. It is designed to detect specific vulnerability classes rather than arbitrary user-defined patterns.
+
+\emph{Custom analyzers} written in general-purpose languages offer maximum flexibility but require substantial engineering effort to parse C code (including macro handling), construct control-flow graphs, implement efficient indexing, and develop query evaluation strategies. For a research prototype, this overhead would detract from the core contribution.
+
+\paragraph{CodeQL as the Implementation Platform.}
+CodeQL is a declarative program analysis framework that allows users to write custom queries over source code~\cite{codeql_about}. It first compiles source code into a relational database, then evaluates user-defined queries written in a Datalog-inspired language called QL. We selected CodeQL because its design directly addresses the challenging requirements.
+
+First, CodeQL represents source code as a queryable relational database, with pre-computed indices over types, names, and structural properties~\cite{ql_ecoop}. This enables efficient lookups that avoid the need for full enumeration, addressing the scale challenge of CRuby's 300,000+ lines of code.
+
+Second, the QL language supports recursive predicates~\cite{codeql_recursion}, which is essential for computing transitive call-graph reachability (R1). CodeQL's query engine implements efficient fixed-point computation with memoization, allowing us to express the GC-trigger analysis declaratively while the engine handles the recursive evaluation.
+
+Third, CodeQL's relational model naturally expresses the ownership binding between subordinate pointers and \texttt{VALUE} variables (R3). We can define predicates that relate derivation sites, pointer variables, and owning \texttt{VALUE}s, then join these relations with control-flow information to detect hazardous patterns.
+
+Fourth, CodeQL provides built-in support for C/C++ control-flow analysis, including \texttt{getASuccessor} and \texttt{getAPredecessor} relations over control-flow nodes. This enables the multi-entity ordering analysis required by R4 without implementing control-flow graph construction from scratch.
+
+Fifth, CodeQL preserves macro invocation metadata, allowing direct detection of \texttt{RB\_GC\_GUARD} usage (R5) rather than relying solely on expansion pattern matching.
+
+Table~\ref{tab:tool_comparison} summarizes how each approach addresses the challenging requirements.
+
+\begin{table}[ht]
+\centering
+\caption{Tool capabilities for challenging requirements}
+\label{tab:tool_comparison}
+\begin{tabular}{lccc}
+\toprule
+\textbf{Tool} & \textbf{R1: Recursive} & \textbf{R3: Relational} & \textbf{R4: CFG} \\
+              & \textbf{Reachability}  & \textbf{Bindings}       & \textbf{Ordering} \\
+\midrule
+Coccinelle         & Manual    & Limited & Partial \\
+Clang Analyzer     & Limited   & Custom  & Yes \\
+GCC Analyzer       & Internal  & No      & Internal \\
+Custom Analyzer    & Manual    & Manual  & Manual \\
+CodeQL             & Built-in  & Native  & Built-in \\
+\bottomrule
+\end{tabular}
+\end{table}
 
 \subsection{Query Implementation}\label{sec:detection_algorithm}
 
-Our detection algorithm implements the query requirements from Section~\ref{sec:Challenges} as a conjunction of predicates over the CodeQL database. The core detection pattern can be expressed as an ordering constraint over control-flow paths:
+Our detection algorithm implements the requirements from Section~\ref{sec:Requirements} as a conjunction of predicates over the CodeQL database. The core detection pattern can be expressed as an ordering constraint over control-flow paths:
 
 \[
 \textsc{Derivation}(p \leftarrow v) \xrightarrow{CFG^*} \textsc{LastUse}(v) \xrightarrow{CFG^+} \textsc{Trigger} \xrightarrow{CFG^+} \textsc{Use}(p)

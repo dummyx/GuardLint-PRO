@@ -1,35 +1,34 @@
-\section{Analysis Challenges}\label{sec:Challenges}
+\section{Analysis Requirements}\label{sec:Requirements}
 
-Designing a static analysis to detect missing \texttt{RB\_GC\_GUARD} directives presents significant technical challenges. This section characterizes the fundamental difficulties that any such analysis must address, which inform both our choice of analysis framework and the design of our detection algorithm.
+Designing a static analysis to detect missing \texttt{RB\_GC\_GUARD} directives requires addressing several fundamental requirements. This section characterizes what any such analysis must accomplish, informing both our choice of analysis framework and the design of our detection algorithm.
 
-\subsection{Required Analysis Capabilities}
+\subsection{Overview of Requirements}
 
-To detect omitted guards, an analyzer must answer four fundamental questions about the program. First, the analyzer must identify all program points where a raw C pointer is derived from a Ruby \texttt{VALUE}. These derivation sites include macro invocations such as \texttt{RSTRING\_PTR}, and \texttt{TypedData\_Get\_Struct}, as well as function calls that return pointers into object-owned memory. Each derivation establishes a dependency relationship: the validity of the subordinate pointer depends on the liveness of the owning \texttt{VALUE}.
+To detect omitted guards, an analyzer must satisfy five requirements:
 
-Second, the analyzer must identify call sites that may invoke the garbage collector, either directly or transitively. Any such call site represents a potential hazard point where, if the owning \texttt{VALUE} has become invisible to conservative scanning, the subordinate pointer may become dangling.
+\begin{description}
+\item[R1: GC-Triggering Function Identification.] The analyzer must identify all functions that may invoke the garbage collector, either directly or through transitive calls. This requires computing reachability in the call graph from every function to CRuby's GC entry point.
 
-Third, the analyzer must identify uses of subordinate pointers that occur after a potential GC trigger in the control flow. A ``use'' includes not only direct dereferences but also passing the pointer as an argument to other functions, which may dereference it internally.
+\item[R2: Subordinate Pointer Derivation Detection.] The analyzer must recognize program points where a raw C pointer is derived from a Ruby \texttt{VALUE}. These derivation sites include macro invocations such as \texttt{RSTRING\_PTR} and \texttt{TypedData\_Get\_Struct}, as well as function calls that return pointers into object-owned memory.
 
-Fourth, the analyzer must determine whether the owning \texttt{VALUE} remains visible to the GC between the trigger and the use of the subordinate pointer. Protection can come from two sources: an explicit \texttt{RB\_GC\_GUARD} directive placed after the trigger, or a subsequent \texttt{VALUE}-level access that forces the compiler to keep it live. When neither protection exists, a missing guard should be flagged.
+\item[R3: Ownership Binding Between Pointers and VALUEs.] The analyzer must establish and track the ownership relationship between each subordinate pointer and its owning \texttt{VALUE} variable. When a derivation occurs, a logical binding is created: the validity of the subordinate pointer depends on the liveness of the owning \texttt{VALUE}.
 
-Combining these requirements, a missing guard is indicated when a subordinate pointer $p$ is obtained from a \texttt{VALUE} $v$, a GC-triggering call occurs after the derivation, the pointer $p$ is used after the trigger, and the variable $v$ has no \texttt{VALUE}-level access after the trigger and no explicit guard.
+\item[R4: Control-Flow Analysis of Accesses.] The analyzer must determine the temporal ordering among three kinds of program points: accesses to subordinate pointers, accesses to owning \texttt{VALUE} variables, and GC-triggering calls. A hazard exists when a subordinate pointer is used after a GC trigger, while the owning \texttt{VALUE} has no access after the trigger.
 
-\subsection{Scale of the Codebase}
+\item[R5: Guard Existence Checking.] The analyzer must determine whether the owning \texttt{VALUE} is protected by an explicit \texttt{RB\_GC\_GUARD} directive. Protection can also come from a subsequent \texttt{VALUE}-level access that forces the compiler to keep it live. When neither protection exists, a missing guard should be flagged.
+\end{description}
 
-CRuby comprises over 300,000 lines of C code with more than 23,000 \texttt{VALUE} variables and over 42,000 functions. Naive enumeration of all possible derivation-trigger-use triples would be computationally impractical: a cubic algorithm over these quantities could require examining on the order of $10^{13}$ combinations. Any practical analyzer must employ efficient indexing and pruning strategies to focus on relevant program fragments while completing in a reasonable time frame.
+Combining these requirements, a missing guard is indicated when: a subordinate pointer $p$ is obtained from a \texttt{VALUE} $v$ (R2, R3), a GC-triggering call occurs after the derivation (R1), the pointer $p$ is used after the trigger (R4), and the variable $v$ has no \texttt{VALUE}-level access after the trigger and no explicit guard (R4, R5).
 
-\subsection{Finding All GC Triggers}
+\subsection{Challenges in Meeting the Requirements}
 
-% The Ruby runtime is deeply interconnected, and most non-trivial operations can transitively reach the GC entry point. In CRuby 3.4.5, our analysis found that approximately 25\% of all functions (10,608 out of 42,612) can reach \texttt{gc\_enter}. This high proportion arises because object allocation (\texttt{rb\_str\_new}, \texttt{rb\_ary\_new}, etc.) may trigger GC when the heap is full, method dispatch (\texttt{rb\_funcall}) may allocate during argument preparation or result conversion, exception handling paths often allocate exception objects, and string operations (\texttt{rb\_str\_cat}, \texttt{rb\_str\_concat}) may resize buffers, triggering allocation.
+Among these five requirements, three present significant technical challenges that influence tool selection.
 
-% This means that distinguishing ``safe'' calls from ``potentially triggering'' calls requires whole-program analysis rather than local inspection. A simple heuristic (e.g., ``only \texttt{rb\_gc} triggers GC'') would miss the vast majority of real hazards. Identifying all functions that may transitively invoke GC requires computing the transitive closure of the call graph rooted at GC entry points---a task that demands efficient recursive query evaluation over a large call graph.
+\paragraph{Challenge of R1: Recursive Call-Graph Reachability.}
+Identifying GC-triggering functions requires computing the transitive closure of the call graph rooted at CRuby's GC entry point \texttt{gc\_enter}. The Ruby runtime is deeply interconnected, and most non-trivial operations can transitively reach the GC. A simple heuristic (e.g., ``only \texttt{rb\_gc} triggers GC'') would miss the vast majority of real hazards, since object allocation, method dispatch, and string operations may all trigger GC when memory pressure is high. Computing this transitive closure efficiently over a large call graph requires recursive query evaluation with proper memoization.
 
-As discussed in the Section \ref{sec:Background}, in order to analyze if a \texttt{VALUE} variable needs to be guarded, we have to identify all the functions that might trigger GC. We define the functions that eventually call CRuby's GC entry point \texttt{gc\_enter} either directly or indirectly.
-
-
-\subsection{Derivation Patterns}
-
-Subordinate pointers are obtained through many different APIs and macros, each with different signatures and expansion patterns. Some are simple macros that expand to just a function call that takes a \texttt{VALUE} variable and returns it's subordinate pointer like \texttt{RSTRING\_PTR}, while others involve function calls with complex control flow. Table~\ref{tab:derivation_patterns} summarizes the major categories.
+\paragraph{Challenge of R3: Tracking Ownership Bindings.}
+Subordinate pointers are obtained through many different APIs and macros, each with different signatures and expansion patterns (Table~\ref{tab:derivation_patterns}). The analyzer must not only recognize these patterns but also maintain the logical binding between each derived pointer and its owning \texttt{VALUE} throughout the analysis. This binding must persist across the control-flow analysis in R4, requiring the analyzer to correlate information from different program points.
 
 \begin{table}[ht]
 \centering
@@ -47,7 +46,12 @@ Binary data & \texttt{rb\_io\_buffer\_get\_bytes} & \texttt{void *} \\
 \end{tabular}
 \end{table}
 
-Additionally, subordinate pointers may be passed through multiple variables or returned from helper functions, requiring tracking of where pointer values originate. Full interprocedural tracking of pointer origins is expensive and may introduce additional imprecision.
+\paragraph{Challenge of R4: Multi-Entity Control-Flow Ordering.}
+The core detection logic requires reasoning about the temporal ordering of three distinct entities: subordinate pointer uses, owning \texttt{VALUE} accesses, and GC triggers. The analyzer must determine whether a path exists where the last \texttt{VALUE}-level access precedes a GC trigger, which in turn precedes a subordinate pointer use. This ordering constraint must be evaluated efficiently across all relevant combinations in the program.
+
+\subsection{Scale of the Codebase}
+
+CRuby comprises over 300,000 lines of C code with more than 23,000 \texttt{VALUE} variables and over 42,000 functions. Naive enumeration of all possible derivation-trigger-use triples would be computationally impractical: a cubic algorithm over these quantities could require examining on the order of $10^{13}$ combinations. Any practical analyzer must employ efficient indexing and pruning strategies to focus on relevant program fragments while completing in a reasonable time frame.
 
 \subsection{Detecting Existing Guards}
 
