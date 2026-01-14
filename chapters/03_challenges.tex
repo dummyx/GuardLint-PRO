@@ -18,15 +18,18 @@ Combining these requirements, a missing guard is indicated when a subordinate po
 
 CRuby comprises over 300,000 lines of C code with more than 23,000 \texttt{VALUE} variables and over 42,000 functions. Naive enumeration of all possible derivation-trigger-use triples would be computationally impractical: a cubic algorithm over these quantities could require examining on the order of $10^{13}$ combinations. Any practical analyzer must employ efficient indexing and pruning strategies to focus on relevant program fragments while completing in a reasonable time frame.
 
-\subsection{Pervasiveness of GC Triggers}
+\subsection{Finding All GC Triggers}
 
-The Ruby runtime is deeply interconnected, and most non-trivial operations can transitively reach the GC entry point. In CRuby 3.4.5, our analysis found that approximately 25\% of all functions (10,608 out of 42,612) can reach \texttt{gc\_enter}. This high proportion arises because object allocation (\texttt{rb\_str\_new}, \texttt{rb\_ary\_new}, etc.) may trigger GC when the heap is full, method dispatch (\texttt{rb\_funcall}) may allocate during argument preparation or result conversion, exception handling paths often allocate exception objects, and string operations (\texttt{rb\_str\_cat}, \texttt{rb\_str\_concat}) may resize buffers, triggering allocation.
+% The Ruby runtime is deeply interconnected, and most non-trivial operations can transitively reach the GC entry point. In CRuby 3.4.5, our analysis found that approximately 25\% of all functions (10,608 out of 42,612) can reach \texttt{gc\_enter}. This high proportion arises because object allocation (\texttt{rb\_str\_new}, \texttt{rb\_ary\_new}, etc.) may trigger GC when the heap is full, method dispatch (\texttt{rb\_funcall}) may allocate during argument preparation or result conversion, exception handling paths often allocate exception objects, and string operations (\texttt{rb\_str\_cat}, \texttt{rb\_str\_concat}) may resize buffers, triggering allocation.
 
-This means that distinguishing ``safe'' calls from ``potentially triggering'' calls requires whole-program analysis rather than local inspection. A simple heuristic (e.g., ``only \texttt{rb\_gc} triggers GC'') would miss the vast majority of real hazards. Identifying all functions that may transitively invoke GC requires computing the transitive closure of the call graph rooted at GC entry points---a task that demands efficient recursive query evaluation over a large call graph.
+% This means that distinguishing ``safe'' calls from ``potentially triggering'' calls requires whole-program analysis rather than local inspection. A simple heuristic (e.g., ``only \texttt{rb\_gc} triggers GC'') would miss the vast majority of real hazards. Identifying all functions that may transitively invoke GC requires computing the transitive closure of the call graph rooted at GC entry points---a task that demands efficient recursive query evaluation over a large call graph.
 
-\subsection{Diversity of Derivation Patterns}
+As discussed in the Section \ref{sec:Background}, in order to analyze if a \texttt{VALUE} variable needs to be guarded, we have to identify all the functions that might trigger GC. We define the functions that eventually call CRuby's GC entry point \texttt{gc\_enter} either directly or indirectly.
 
-Subordinate pointers are obtained through many different APIs and macros, each with different signatures and expansion patterns. Some are simple macro expansions (e.g., \texttt{RSTRING\_PTR}), while others involve function calls with complex control flow. Table~\ref{tab:derivation_patterns} summarizes the major categories.
+
+\subsection{Derivation Patterns}
+
+Subordinate pointers are obtained through many different APIs and macros, each with different signatures and expansion patterns. Some are simple macros that expand to just a function call that takes a \texttt{VALUE} variable and returns it's subordinate pointer like \texttt{RSTRING\_PTR}, while others involve function calls with complex control flow. Table~\ref{tab:derivation_patterns} summarizes the major categories.
 
 \begin{table}[ht]
 \centering
@@ -69,6 +72,8 @@ RB_GC_GUARD(str);
 
 Reliably detecting whether a guard is present requires either access to macro invocation metadata or recognition of characteristic expansion patterns in the preprocessed code. The analyzer must handle both cases to be robust across build configurations.
 
+
+\iffalse
 \subsection{Precision-Recall Tradeoff}
 
 The analysis must navigate a precision-recall tradeoff. Over-approximating derivations or triggers leads to excessive false positives, while under-approximating them risks missing real bugs. Given that CRuby has been maintained for 30 years with extensive testing, the analyzer must be precise enough to surface actionable candidates rather than overwhelming maintainers with noise.
@@ -89,3 +94,4 @@ Pointer uses & False positives from dead code paths & Missed bugs from unrecogni
 \bottomrule
 \end{tabular}
 \end{table}
+\fi

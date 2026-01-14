@@ -43,7 +43,7 @@ The query proceeds in four phases. In the first phase, we identify all local var
 
 \subsection{Implementation}\label{sec:implementation}
 
-We implemented GuardLint as a set of CodeQL queries distributed as a query pack.\footnote{Artifact: \url{https://github.com/dummyx/guardql/tree/e8e4ed62f5ec89bd663ac380dccd2c933a48186d}. The main queries used in this paper are \texttt{missing\_guards\_vo.ql}, \texttt{redundant\_guards.ql}, and \texttt{good\_guards.ql} under \texttt{codeql-custom-queries-cpp}.}
+We implemented GuardLint as a set of CodeQL queries.\footnote{Artifact: \url{https://github.com/dummyx/guardql/tree/e8e4ed62f5ec89bd663ac380dccd2c933a48186d}. The main queries used in this paper are \texttt{missing\_guards\_vo.ql}, \texttt{redundant\_guards.ql}, and \texttt{good\_guards.ql} under \texttt{codeql-custom-queries-cpp}. The custom library that's used by the query pack resides in lib\/ directory}
 
 \subsubsection*{Identifying VALUE Variables}
 The foundation of our analysis is identifying local variables of type \texttt{VALUE}. Listing~\ref{lst:value_variable_detection} shows the CodeQL class that captures this. The predicate handles both direct type declarations and typedef indirections.
@@ -60,11 +60,13 @@ class ValueVariable extends LocalVariable {
 \end{lstlisting}
 \end{figure}
 
-\subsubsection*{Detecting Pointer Derivations}
+Also, pointer derivation operation, GC triggering functions, and other basic elements that's needed for the queries, are defined as classes in this manner. This could help analysis performance in a way that limits the upper bound on the size of a relation
+
+\subsubsection*{Pointer Derivations and Subordinate Relation Binding}
 We define predicates that recognize common derivation operations in CRuby. Listing~\ref{lst:derivation_predicate} shows the structure of our derivation detection. We try to detect this by matching the underlying function call's function name.
 
 \begin{figure}[tb]
-\begin{lstlisting}[caption={CodeQL predicate for detecting pointer derivations (simplified).},label={lst:derivation_predicate}]
+\begin{lstlisting}[caption={CodeQL class definition for pointer derivation functions(simplified).},label={lst:derivation_predicate}]
 class InnerPointerTakingFunctionByName extends Function {
   InnerPointerTakingFunctionByName() {
     this.getName() in [
@@ -76,9 +78,34 @@ class InnerPointerTakingFunctionByName extends Function {
 \end{lstlisting}
 \end{figure}
 
-This is necessarily an over-approximation: not all recognized APIs always produce unsafe pointers, and some unsafe derivations may be missed if they use unmodeled patterns. However, the modeled set covers the most common and well-documented APIs in CRuby's extension interface.
+This class would furtherly be used for composing the class of actual derivation function calls. Then the logical relation between the owning objects and the subordinate pointers could be represent as: (1) A owning object (\texttt{VALUE}) has been passed to a pointer derivation function call. (2) The return value assigns to a variable of pointer types. (3) Then assigned pointer type value would be considered a subordinate pointer of that owning object. Listing \ref{lst:derivation_relation} shows the actual implementation.
 
-\subsubsection*{Computing GC Trigger Reachability}
+\begin{figure}[tb]
+\begin{lstlisting}[caption={Predicate for the relation of owning object and the derived pointer.},label={lst:derivation_relation}]
+predicate hasInnerPointerAssignment(
+  ValueVariable v, PointerVariable innerPointer, ControlFlowNode innerPointerTaking
+) {
+  exists(Assignment assignment |
+    assignment.getLValue().getAChild*().(VariableAccess).getTarget() = innerPointer and
+    assignment.getRValue().getAChild*() instanceof InnerPointerTakingFunctionByNameCall and
+    assignment
+        .getRValue()
+        .getAChild*()
+        .(InnerPointerTakingFunctionByNameCall)
+        .getAnArgument()
+        .(ValueAccess)
+        .getTarget() = v and
+    assignment = innerPointerTaking
+  )
+}
+\end{lstlisting}
+\end{figure}
+
+The binding is done by checking if such an assignment exists for each \texttt{VALUE} and pointer type variables.
+
+% This is necessarily an over-approximation: not all recognized APIs always produce unsafe pointers, and some unsafe derivations may be missed if they use unmodeled patterns. However, the modeled set covers the most common and well-documented APIs in CRuby's extension interface.
+
+\subsubsection*{GC Triggering Functions}
 We identify GC-triggering functions through transitive reachability to CRuby's GC entry point \texttt{gc\_enter}. This is achieved using CodeQL's recursive predicate capability\cite{codeql_recursion}. Listing~\ref{lst:is_gc_trigger} shows the implementation.
 
 \begin{figure}[tb]
