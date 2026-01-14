@@ -236,13 +236,6 @@ The main query structure combines these components. Listing~\ref{lst:missing_gua
 
 \begin{figure}[tb]
 \begin{lstlisting}[caption={Main query for detecting missing guards.},label={lst:missing_guard_ql}]
-/**
- * @name Missing RB_GC_GUARD
- * @description Finds VALUE variables that may need
- *              RB_GC_GUARD but lack one.
- * @kind problem
- * @problem.severity warning
- */
 from ValueVariable v, Variable p,
      GcTriggerCall gtc,
      Expr pointerUsageAccess,
@@ -268,13 +261,6 @@ In addition to the missing-guard query, GuardLint includes queries to identify \
 
 \begin{figure}[tb]
 \begin{lstlisting}[caption={Query for detecting potentially redundant guards.},label={lst:redundant_guard_ql}]
-/**
- * @name Potentially redundant RB_GC_GUARD
- * @description Finds guards that may not be necessary
- *              under our model.
- * @kind problem
- * @problem.severity recommendation
- */
 from ValueVariable v, MacroInvocation guard
 where
   guard.getMacroName() = "RB_GC_GUARD" and

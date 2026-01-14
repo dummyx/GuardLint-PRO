@@ -75,27 +75,3 @@ RB_GC_GUARD(str);
 \end{figure}
 
 Reliably detecting whether a guard is present requires either access to macro invocation metadata or recognition of characteristic expansion patterns in the preprocessed code. The analyzer must handle both cases to be robust across build configurations.
-
-
-\iffalse
-\subsection{Precision-Recall Tradeoff}
-
-The analysis must navigate a precision-recall tradeoff. Over-approximating derivations or triggers leads to excessive false positives, while under-approximating them risks missing real bugs. Given that CRuby has been maintained for 30 years with extensive testing, the analyzer must be precise enough to surface actionable candidates rather than overwhelming maintainers with noise.
-
-Table~\ref{tab:precision_tradeoffs} summarizes the key tradeoffs in our design.
-
-\begin{table}[ht]
-\centering
-\caption{Precision-recall tradeoffs in analysis design}
-\label{tab:precision_tradeoffs}
-\begin{tabular}{p{2.5cm}p{2.5cm}p{2.5cm}}
-\toprule
-\textbf{Component} & \textbf{Over-approx.\ effect} & \textbf{Under-approx.\ effect} \\
-\midrule
-Derivations & False positives from non-hazardous pointers & Missed bugs from unmodeled APIs \\
-GC triggers & False positives from safe calls & Missed bugs from indirect triggers \\
-Pointer uses & False positives from dead code paths & Missed bugs from unrecognized uses \\
-\bottomrule
-\end{tabular}
-\end{table}
-\fi
