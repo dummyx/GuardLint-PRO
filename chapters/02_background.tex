@@ -11,9 +11,6 @@ A \emph{subordinate pointer} is a raw C pointer that points into subordinate mem
 
 For example, in the case of strings, the standard subordinate pointer derivation operation is \texttt{RSTRING\_PTR(str)},
 which returns a \texttt{char *} pointing to the string's bytes.  
-% Importantly, Ruby strings are byte sequences and do not promise a terminating NUL byte; if a C string is required, extension authors are expected to use coercion helpers such as \texttt{StringValueCStr} (which ensures a terminating NUL and rejects embedded NULs).%
-% \footnote{\url{https://docs.ruby-lang.org/en/3.1/extension_rdoc.html} (see the discussion of \texttt{StringValue}, \texttt{StringValuePtr}, and \texttt{StringValueCStr}).}
-% Internally, CRuby strings may store their bytes either in an embedded area (for short strings) or in a separately allocated heap buffer.  \texttt{RSTRING\_PTR} selects between these representations (simplified in Listing~\ref{lst:rstring_ptr_impl}). This matters because an embedded string's bytes live \emph{inside} the owning object, while a heap string's bytes live in a separate allocation.
 
 \subsubsection*{Subordinate Accessing Example}
 Subordinate pointers are the standard way C code accesses Ruby object data.  Listing~\ref{lst:derived_ptr_pattern} shows a typical pattern: obtain a Ruby string and derive a pointer to its bytes via \texttt{RSTRING\_PTR}.  This pattern pervades both the CRuby interpreter and C extensions.
@@ -52,43 +49,37 @@ To prevent subordinate pointers from outliving their owning \texttt{VALUE} under
 \end{figure}
 
 \subsection{Compiler Optimizations}\label{sec:compiler_opts}
-Optimizing compilers may shorten variable lifetimes and reuse storage locations once a \texttt{VALUE} is no longer needed from the language's point of view. This can break GC safety when code derives a subordinate pointer from a Ruby object and later uses that pointer after the original \texttt{VALUE} has become ``dead'' to the compiler.
+Optimizing compilers may shorten variable lifetimes and reuse storage locations once a \texttt{VALUE} is no longer needed for subsequent C-level computations. This can break GC safety when code derives a subordinate pointer from a Ruby object and later uses that pointer after the owning \texttt{VALUE} has become ``dead'' to the compiler.
 
 Two common optimization families contribute to the Guard Problem. First, compilers compute liveness and may treat a variable as dead right after its last use. Consider a sequence where a subordinate pointer \texttt{p} is extracted from a \texttt{VALUE v} (e.g., \texttt{p = RSTRING\_PTR(v)}), followed by a use of \texttt{p} without any further reference to \texttt{v}. If \texttt{v} is not used again, the compiler may end \texttt{v}'s live range at the extraction point. The register allocator may then reuse the register or stack slot that previously held \texttt{v}, making the object unreachable to conservative scanning.
 
 Second, to reduce stack frame size, compilers may reuse stack slots for locals whose live ranges do not overlap. For instance, GCC exposes \texttt{-fstack-reuse} to control reuse of stack space for locals and temporaries\cite{gcc_fstack_reuse}, and LLVM implements stack coloring to merge disjoint stack slots\cite{llvm_stack_coloring}. For a conservative collector, such reuse can make a live Ruby object invisible.
 
-\texttt{RB\_GC\_GUARD} prevents these issues by creating a (seemingly) observable use of the \texttt{VALUE} \emph{after} a potential GC trigger, forcing the compiler to keep the variable live until that point. Without such a post-trigger use, an optimizing compiler may treat the \texttt{VALUE} as dead at the trigger and eliminate it from stack/register state, even if the source code still names the variable.
+\texttt{RB\_GC\_GUARD} prevents these issues by creating a (seemingly) observable use of the \texttt{VALUE} \emph{after} a potential GC trigger, forcing the compiler to keep the variable live until that point. Without such a post-trigger use, an optimizing compiler may treat the \texttt{VALUE} as dead and eliminate it from the machine-state locations scanned by the conservative collector.
 
-We confirmed this effect by compiling CRuby 3.4.5 and inspecting \texttt{wmap\_foreach\_i} in \texttt{weakmap.c}, which copies two \texttt{VALUE}s (\texttt{k}, \texttt{v}) from a \texttt{weakmap\_entry} and calls a callback that may trigger GC.  With \texttt{RB\_GC\_GUARD} present, both GCC 15.2.1 and Clang 21.1.6 materialize \texttt{v} in a stack slot before the call (so the macro can take \texttt{\&(v)}) and emit a post-call load from that slot.  When we remove the \texttt{RB\_GC\_GUARD} calls, the compilers no longer need \texttt{v} as a live local across the callback: they perform the \texttt{UNDEF\_P} check directly against \texttt{entry->val} and emit no spill or post-call load for \texttt{v}.  Disabling sibling-call optimization (e.g., \texttt{-fno-optimize-sibling-calls}) removes the tail jump but does not restore the root; with sibling-call optimization enabled (the default at \texttt{-O2}/\texttt{-O3}), both compilers may additionally emit a tail call that deallocates the caller frame before entering the callback.
+We confirmed this effect by building CRuby 3.4.5 (\texttt{-O3}, x86\_64) with GCC 15.2.1 and inspecting \texttt{rb\_marshal\_dump\_limited} in \texttt{marshal.c} (see Appendix~\ref{app:rb_marshal_dump_limited}). This function allocates a typed-data wrapper object \texttt{wrapper} and obtains a raw pointer \texttt{arg} to the embedded \texttt{struct dump\_arg}. Since \texttt{arg} is not a Ruby object pointer, it does not keep \texttt{wrapper} reachable under conservative scanning; therefore, \texttt{wrapper} itself must remain visible in the scanned machine state for the duration of the routine. In the original build, GCC spills \texttt{wrapper} to a dedicated stack slot immediately after allocation, and the later \texttt{RB\_GC\_GUARD(wrapper)} compels a post-use access to that slot (Listing~\ref{lst:asm_rb_marshal_dump_limited}). In the variant where only \texttt{RB\_GC\_GUARD(wrapper)} is removed and CRuby is cleanly rebuilt, GCC eliminates this spill: the corresponding stack slot is used only for the stack canary, and the \texttt{wrapper} value in \texttt{rax} is overwritten by the next call. As a result, \texttt{wrapper} becomes invisible to conservative root scanning while the derived pointer \texttt{arg} remains in use.
 
 \begin{figure}[tb]
-\begin{lstlisting}[caption={Disassembly results},label={lst:asm_wmap_foreach_i}]
-; wmap_foreach_i (weakmap.c), x86_64
+\begin{lstlisting}[caption={Disassembly excerpts of \texttt{rb\_marshal\_dump\_limited} (GCC 15.2.1, x86\_64, \texttt{-O3}).},label={lst:asm_rb_marshal_dump_limited}]
+; rb_marshal_dump_limited (marshal.c), GCC 15.2.1
 
-; GCC 15.2.1, with RB_GC_GUARD:
-mov    rsi, QWORD PTR [rax+0x8]   ; v = entry->val
-mov    QWORD PTR [rsp+0x18], rsi  ; spill v to stack (root)
-call   QWORD PTR [rdx]            ; callback (may trigger GC)
-lea    rdx, [rsp+0x18]            ; &(v) for guard
-mov    QWORD PTR [rsp+0x20], rdx
-mov    rdx, QWORD PTR [rsp+0x18]  ; post-call load via guard
+; Original (RB_GC_GUARD(wrapper) present):
+sub    rsp, 0x28
+mov    QWORD PTR [rsp+0x18], r14        ; stack canary
+call   rb_data_typed_object_zalloc      ; returns wrapper in rax
+mov    QWORD PTR [rsp+0x8], rax         ; spill wrapper to stack (GC-visible)
+call   rb_st_init_numtable              ; clobbers rax, wrapper kept on stack
+...
+lea    rax, [rsp+0x8]                   ; RB_GC_GUARD(wrapper)
+mov    QWORD PTR [rsp+0x10], rax
+mov    rax, QWORD PTR [rsp+0x8]         ; reload wrapper via guard
 
-; GCC 15.2.1, with RB_GC_GUARD removed:
-cmp    QWORD PTR [rax+0x8], 0x24  ; UNDEF_P(entry->val), v not materialized
-call   QWORD PTR [rdx]            ; callback (may trigger GC)
-; (no spill / no post-call load for v)
-
-; Clang 21.1.6, with RB_GC_GUARD:
-mov    rcx, QWORD PTR [r14+0x8]   ; v = entry->val
-mov    QWORD PTR [rsp+0x10], rcx  ; spill v to stack (root)
-call   QWORD PTR [rbx]            ; callback (may trigger GC)
-lea    rcx, [rsp+0x10]            ; &(v) for guard
-mov    rcx, QWORD PTR [rcx]       ; post-call load via guard
-
-; Clang 21.1.6, with RB_GC_GUARD removed:
-cmp    QWORD PTR [r14+0x8], 0x24  ; UNDEF_P(entry->val), v not materialized
-call   QWORD PTR [rbx]            ; callback (may trigger GC)
+; Variant (RB_GC_GUARD(wrapper) removed):
+sub    rsp, 0x18
+mov    QWORD PTR [rsp+0x8], r14         ; stack canary (slot reused)
+call   rb_data_typed_object_zalloc      ; wrapper not spilled
+call   rb_st_init_numtable              ; clobbers rax, wrapper not in stack
+; no guard access, so wrapper is not required live here
 \end{lstlisting}
 \end{figure}
 

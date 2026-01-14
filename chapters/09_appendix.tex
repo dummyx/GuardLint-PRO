@@ -1,4 +1,50 @@
 \appendix
+\section{Source Code of \texttt{rb\_marshal\_dump\_limited}}\label{app:rb_marshal_dump_limited}
+Quoted from CRuby v3.4.5.\footnote{\url{https://github.com/ruby/ruby/blob/20cda200d3ce092571d0b5d342dadca69636cb0f/marshal.c#L1211-L1248}}
+
+\begin{figure}[tb]
+\begin{lstlisting}[caption={Source code of \texttt{rb\_marshal\_dump\_limited}},label={lst:rb_marshal_dump_limited_full}]
+VALUE
+rb_marshal_dump_limited(VALUE obj, VALUE port, int limit)
+{
+    struct dump_arg *arg;
+    VALUE wrapper; /* used to avoid memory leak in case of exception */
+
+    wrapper = TypedData_Make_Struct(0, struct dump_arg, &dump_arg_data, arg);
+    arg->dest = 0;
+    arg->symbols = st_init_numtable();
+    arg->data    = rb_init_identtable();
+    arg->num_entries = 0;
+    arg->compat_tbl = 0;
+    arg->encodings = 0;
+    arg->userdefs = 0;
+    arg->str = rb_str_buf_new(0);
+    if (!NIL_P(port)) {
+        if (!rb_respond_to(port, s_write)) {
+            io_needed();
+        }
+        arg->dest = port;
+        dump_check_funcall(arg, port, s_binmode, 0, 0);
+    }
+    else {
+        port = arg->str;
+    }
+
+    w_byte(MARSHAL_MAJOR, arg);
+    w_byte(MARSHAL_MINOR, arg);
+
+    w_object(obj, arg, limit);
+    if (arg->dest) {
+        rb_io_write(arg->dest, arg->str);
+        rb_str_resize(arg->str, 0);
+    }
+    clear_dump_arg(arg);
+    RB_GC_GUARD(wrapper);
+
+    return port;
+}
+\end{lstlisting}
+\end{figure}
 
 \section{Source Code of \texttt{ossl\_cipher\_update}}\label{app:ossl_cipher_update}
 Quoted from CRuby v3.4.5.\footnote{\url{https://github.com/ruby/ruby/blob/20cda200d3ce092571d0b5d342dadca69636cb0f/ext/openssl/ossl_cipher.c#L372}}
