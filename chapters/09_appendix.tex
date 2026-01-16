@@ -98,9 +98,9 @@ ossl_cipher_update(int argc, VALUE *argv, VALUE self)
 Quoted from CRuby v3.4.5.\footnote{\url{https://github.com/ruby/ruby/blob/20cda200d3ce092571d0b5d342dadca69636cb0f/dir.c#L3193}}
 
 \begin{lstlisting}[label={lst:ruby_brace_expand_full}]
-	static int
-	ruby_brace_expand(const char *str, int flags, ruby_glob_func *func, VALUE arg,
-	                  rb_encoding *enc, VALUE var)
+static int
+ruby_brace_expand(const char *str, int flags, ruby_glob_func *func, VALUE arg,
+                  rb_encoding *enc, VALUE var)
 {
     const int escape = !(flags & FNM_NOESCAPE);
     const char *p = str;
