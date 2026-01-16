@@ -4,9 +4,9 @@ Many garbage-collected languages, such as Ruby, Python, JavaScript and Java, are
 
 Incorrect GC operations (i.e., omitted GC operations and unnecessary GC operations) can cause serious problems.
 For example, in Go, when a file descriptor is extracted from an \texttt{os.File} object and passed to a system call, the garbage collector may determine that the \texttt{os.File} is no longer referenced and collect it, triggering a finalizer that closes the file descriptor while the system call is still in progress\cite{GoKeepAlive,GoIssue9046}.
-Similarly, in .NET, when a method operates on a handle stored in an object field, the garbage collector may collect the object and run its finalizer, closing the handle, before the method completes, causing a race condition that manifests as intermittent crashes in production\cite{DotNetKeepAlive,DotNetIssue103522}.
+Similarly, in .NET, when a method operates on a handle stored in an object field, the garbage collector may collect the object and run its finalizer, closing the handle, before the method completes, causing a race condition that manifests as intermittent crashes in production\cite{DotNetKeepAlive,DotNetIssue103522,DotNetBlog}.
 Both languages provide mechanisms to prevent such premature collection (\texttt{runtime.KeepAlive} in Go and \texttt{GC.KeepAlive} in .NET), but developers must manually insert these calls at the correct locations.
-In general, with omitted GC operations, GC might reclaim live objects, which eventually results in use-after-free errors or data corruption.  With unnecessary GC operations, the mutator might be slowed down as we will see in the section ~\ref{sec:Benchmark}.
+In general, with omitted GC operations, GC might reclaim live objects, which eventually results in use-after-free errors or data corruption.  With unnecessary GC operations, the mutator might be slowed down as we will see in Section ~\ref{sec:Benchmark}.
 
 At the same time, as GC operations are ``extra'' to the core implementation logic, omission of a GC operation merely affects GC behaviors, which can be unnoticed for a long time.  For example, in the reference implementation of Ruby (CRuby)\footnote{\url{https://github.com/ruby/ruby}}, there are new bugs that omit extra operations for GC even after the implementation has been maintained 30 years\cite{newly_found_missing}.
 

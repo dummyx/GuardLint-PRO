@@ -80,11 +80,11 @@ static VALUE process_data(VALUE input) {
 \end{lstlisting}
 \end{figure}
 
-The query proceeds in four phases. In the first phase, we identify all local variables of type \texttt{VALUE}. In the second phase, for each \texttt{VALUE} variable, we find derivation sites where a raw pointer is derived. In the third phase, we compute the set of functions that may transitively trigger GC via call-graph reachability. In the fourth phase, we check control-flow ordering constraints to identify variables that need guards but lack them.
+The query's logic can be split into four phases. In the first phase, we identify all local variables of type \texttt{VALUE}. In the second phase, for each \texttt{VALUE} variable, we find derivation sites where a raw pointer is derived. In the third phase, we compute the set of functions that may transitively trigger GC via call-graph reachability. In the fourth phase, we check control-flow ordering constraints to identify variables that need guards but lack them.
 
 \subsection{Implementation}\label{sec:implementation}
 
-We implemented GuardLint as a set of CodeQL queries.\footnote{Artifact: \url{https://github.com/dummyx/guardql/tree/e8e4ed62f5ec89bd663ac380dccd2c933a48186d}. The main queries used in this paper are \texttt{missing\_guards\_vo.ql}, \texttt{redundant\_guards.ql}, and \texttt{good\_guards.ql} under \texttt{codeql-custom-queries-cpp}. The custom library that's used by the query pack resides in lib\/ directory}
+We implemented GuardLint as a set of CodeQL queries.\footnote{Artifact: \url{https://github.com/dummyx/guardql/tree/9d5fe545dc6f843879c528de9792b63abba55649}. The main queries used in this paper are \texttt{missing\_guards\_vo.ql}, \texttt{redundant\_guards.ql}, and \texttt{good\_guards.ql} under \texttt{codeql-custom-queries-cpp}. The custom library that's used by the query pack resides in lib\/ directory}
 
 \subsubsection*{Identifying VALUE Variables and Pointer Derivations}
 The foundation of our analysis is identifying local variables of type \texttt{VALUE} and tracking their relationship to derived pointers. We define a CodeQL class \texttt{ValueVariable} that matches local variables whose type is \texttt{VALUE} (handling both direct declarations and typedef indirections). Defining specific types in this manner limits the upper bound on the size of a relation, helping the query optimizer be more effective~\cite{codeql_specific_types}.
@@ -114,7 +114,7 @@ class GcTriggerCall extends FunctionCall {
 \end{lstlisting}
 \end{figure}
 
-This predicate computes the transitive closure of the call graph rooted at \texttt{gc\_enter}. It is a may-trigger approximation that intentionally errs on the side of reporting candidates, addressing the challenge that most CRuby functions can transitively reach GC. The recursive formulation leverages CodeQL's built-in memoization and fixed-point computation, making it efficient even for large call graphs. The result is cached in the database, so subsequent queries can reuse the computed trigger set.
+This predicate determines whether the GC entry point \texttt{gc\_enter} is reachable from a function. It recursively checks if the function's body, or the body of any called function, contains an invocation of \texttt{gc\_enter}. The result is cached after the first execution, enabling subsequent queries to reuse the computed trigger set.
 
 \subsubsection*{Detecting Existing Guards}
 GuardLint detects \texttt{RB\_GC\_GUARD} usage through recognizing the characteristic expansion pattern of the GCC-style implementation: the introduction of a local temporary named \texttt{rb\_gc\_guarded\_ptr} initialized with the address of the guarded \texttt{VALUE}.
@@ -180,4 +180,4 @@ select v, derivationSite, gtc, pointerUsageAccess
 Because the CFG represents one possible evaluation order out of those allowed by the C language specification and compiler, the analysis remains a conservative approximation rather than a compiler-precise liveness proof. Additionally, we conservatively treat passing a subordinate pointer as an argument as a potential use, though we do not fully analyze derived-pointer dereferences inside callees in the current configuration.
 
 \subsubsection*{Complementary Queries}
-In addition to the missing-guard query, GuardLint includes queries to identify \emph{matched guards} (existing \texttt{RB\_GC\_GUARD} invocations where the guarded variable satisfies \texttt{needsGuard}, representing guards that our model confirms as necessary) and \emph{potentially redundant guards} (existing guards where the guarded variable does \emph{not} satisfy \texttt{needsGuard}, which may be candidates for removal, though they could also represent defensive coding or protection against future code changes). These complementary queries support a practical workflow: developers can review matched guards for confidence, investigate missing guards for safety, and consider removing redundant guards for performance.
+In addition to the missing-guard query, GuardLint includes queries to identify \emph{matched guards} (existing \texttt{RB\_GC\_GUARD} invocations where the guarded variable satisfies \texttt{needsGuard}, representing guards that our model confirms as necessary) and \emph{potentially redundant guards} (existing guards where the guarded variable does \emph{not} satisfy \texttt{needsGuard}, which may be candidates for removal, though they could also represent defensive coding or protection against future code changes). These complementary queries support a practical workflow: developers can review matched guards for confidence, investigate missing guards for safety, and consider removing redundant guards for performance and clearance.

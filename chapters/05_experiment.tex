@@ -27,7 +27,7 @@ We evaluated the execution time on the same machine used for benchmarking (Secti
 \subsection{Classification and Summary of Results}
 We compare GuardLint's judgments with existing \texttt{RB\_GC\_GUARD} placements in the codebase as a reference point. We classify an existing guard as \emph{Matched} if the guarded variable satisfies our \texttt{needsGuard} predicate at that program point. We classify it as \emph{Potentially redundant} if the variable does not satisfy \texttt{needsGuard} there (e.g., there is no modeled GC trigger on relevant paths, or the variable is accessed after the trigger). Finally, we report an \emph{Omission} site when a variable satisfies \texttt{needsGuard} but is not detected as guarded.
 
-These labels are defined strictly \emph{under GuardLint's model}: a ``potentially redundant'' report indicates that the specific derived-pointer hazard pattern is absent according to the modeled derivations, triggers, and uses, but it does not by itself prove that the guard is unnecessary for all purposes (e.g., future edits, unmodeled derivations, or defensive coding).
+These labels are defined strictly under GuardLint's model: a ``potentially redundant'' report indicates that the specific derived-pointer hazard pattern is absent according to the modeled derivations, triggers, and uses, but it does not by itself prove that the guard is unnecessary for all purposes (e.g., future edits, unmodeled derivations, or defensive coding).
 
 Our analysis yielded the results shown in Table~\ref{tab:results}.
 

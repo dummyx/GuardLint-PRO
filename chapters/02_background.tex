@@ -3,9 +3,7 @@
 This section describes the memory management model and guard mechanism in CRuby. We first explain how Ruby objects own native memory regions and how subordinate pointers are obtained from them. We then describe the compiler optimizations that can shorten the lifetime of owning references, and CRuby's conservative scanning strategy. Finally, we present the \texttt{RB\_GC\_GUARD} mechanism and discuss why correct placement is both critical and difficult.
 
 \subsection{Subordinate Memory in CRuby}
-Many CRuby objects consist of a small GC-managed ``header'' (the Ruby object itself)
-plus an additional region of native memory that stores the object's payload.  The GC
-tracks the header as a Ruby object, but the payload typically resides in memory areas managed by CRuby's runtime and reclaimed when the owning object is reclaimed.  We call such payload regions \emph{subordinate memory areas}.
+Non-immediate CRuby objects occupy a fixed-size slot (header) in the GC heap. If the payload fits within this slot, it is stored internally; otherwise, the header points to an additional region of native memory.  The GC tracks the header as a Ruby object, but the payload typically resides in memory areas managed by CRuby's runtime and reclaimed when the owning object is reclaimed.  We call such payload regions \emph{subordinate memory areas}.
 
 A \emph{subordinate pointer} is a raw C pointer that points into subordinate memory.  It is \emph{not} a Ruby object and therefore is not treated as a GC root.  Subordinate pointers are pervasive in the interpreter and in C extensions because they are the conventional way to access Ruby payloads. However, because they are ordinary C pointers, their validity depends on the liveness of the owning Ruby object.
 
@@ -51,9 +49,7 @@ To prevent subordinate pointers from outliving their owning \texttt{VALUE} under
 \subsection{Compiler Optimizations}\label{sec:compiler_opts}
 Optimizing compilers may keep a local variable only as long as it is needed for C-level computations. When the last use of a \texttt{VALUE} has passed, the compiler may reuse the same register or stack location for other values. This can break GC safety when code derives a subordinate pointer from a Ruby object and later uses that pointer after the owning \texttt{VALUE} is no longer kept in the machine state.
 
-Two common optimizations contribute to the Guard Problem. First, after extracting a subordinate pointer \texttt{p} from a \texttt{VALUE v} (e.g., \texttt{p = RSTRING\_PTR(v)}), the compiler may stop keeping \texttt{v} if it is not referenced again. The register or stack slot that previously held \texttt{v} can then be overwritten, making the object unreachable to conservative scanning.
-
-Second, to reduce stack usage, compilers may reuse the same stack slot for different locals at different times. GCC exposes \texttt{-fstack-reuse} to control such reuse\cite{gcc_fstack_reuse}, and LLVM applies a similar stack-slot reuse optimization\cite{llvm_stack_coloring}. Under conservative scanning, this reuse can overwrite the last remaining copy of a \texttt{VALUE} even while subordinate pointers into its payload are still being used.
+Compiler optimizations based on variable liveness often lead to the Guard Problem. After extracting a derived pointer \texttt{p} from a \texttt{VALUE v} (e.g., \texttt{p = RSTRING\_PTR(v)}), the compiler may treat \texttt{v} as "dead" if it is not referenced again. As a result, the register or stack slot holding \texttt{v} is reused for other data. This occurs in optimizations such as GCC's \texttt{-fstack-reuse}\cite{gcc_fstack_reuse} and LLVM's Stack Coloring\cite{llvm_stack_coloring}. In a conservative GC setup, this reuse may overwrite the original \texttt{VALUE}, making the object unreachable even while the derived pointer \texttt{p} is still in use.
 
 \texttt{RB\_GC\_GUARD} addresses this by forcing a use of the \texttt{VALUE} at an explicit program point. When placed after calls that may trigger GC, the forced use makes the compiler keep the \texttt{VALUE} until that point, typically by storing it in a stack slot that remains visible to conservative scanning.
 
