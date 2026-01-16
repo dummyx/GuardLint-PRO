@@ -49,37 +49,59 @@ To prevent subordinate pointers from outliving their owning \texttt{VALUE} under
 \end{figure}
 
 \subsection{Compiler Optimizations}\label{sec:compiler_opts}
-Optimizing compilers may shorten variable lifetimes and reuse storage locations once a \texttt{VALUE} is no longer needed for subsequent C-level computations. This can break GC safety when code derives a subordinate pointer from a Ruby object and later uses that pointer after the owning \texttt{VALUE} has become ``dead'' to the compiler.
+Optimizing compilers may keep a local variable only as long as it is needed for C-level computations. When the last use of a \texttt{VALUE} has passed, the compiler may reuse the same register or stack location for other values. This can break GC safety when code derives a subordinate pointer from a Ruby object and later uses that pointer after the owning \texttt{VALUE} is no longer kept in the machine state.
 
-Two common optimization families contribute to the Guard Problem. First, compilers compute liveness and may treat a variable as dead right after its last use. Consider a sequence where a subordinate pointer \texttt{p} is extracted from a \texttt{VALUE v} (e.g., \texttt{p = RSTRING\_PTR(v)}), followed by a use of \texttt{p} without any further reference to \texttt{v}. If \texttt{v} is not used again, the compiler may end \texttt{v}'s live range at the extraction point. The register allocator may then reuse the register or stack slot that previously held \texttt{v}, making the object unreachable to conservative scanning.
+Two common optimizations contribute to the Guard Problem. First, after extracting a subordinate pointer \texttt{p} from a \texttt{VALUE v} (e.g., \texttt{p = RSTRING\_PTR(v)}), the compiler may stop keeping \texttt{v} if it is not referenced again. The register or stack slot that previously held \texttt{v} can then be overwritten, making the object unreachable to conservative scanning.
 
-Second, to reduce stack frame size, compilers may reuse stack slots for locals whose live ranges do not overlap. For instance, GCC exposes \texttt{-fstack-reuse} to control reuse of stack space for locals and temporaries\cite{gcc_fstack_reuse}, and LLVM implements stack coloring to merge disjoint stack slots\cite{llvm_stack_coloring}. For a conservative collector, such reuse can make a live Ruby object invisible.
+Second, to reduce stack usage, compilers may reuse the same stack slot for different locals at different times. GCC exposes \texttt{-fstack-reuse} to control such reuse\cite{gcc_fstack_reuse}, and LLVM applies a similar stack-slot reuse optimization\cite{llvm_stack_coloring}. Under conservative scanning, this reuse can overwrite the last remaining copy of a \texttt{VALUE} even while subordinate pointers into its payload are still being used.
 
-\texttt{RB\_GC\_GUARD} prevents these issues by creating a (seemingly) observable use of the \texttt{VALUE} \emph{after} a potential GC trigger, forcing the compiler to keep the variable live until that point. Without such a post-trigger use, an optimizing compiler may treat the \texttt{VALUE} as dead and eliminate it from the machine-state locations scanned by the conservative collector.
+\texttt{RB\_GC\_GUARD} addresses this by forcing a use of the \texttt{VALUE} at an explicit program point. When placed after calls that may trigger GC, the forced use makes the compiler keep the \texttt{VALUE} until that point, typically by storing it in a stack slot that remains visible to conservative scanning.
 
-We confirmed this effect by building CRuby 3.4.5 (\texttt{-O3}, x86\_64) with GCC 15.2.1 and inspecting \texttt{rb\_marshal\_dump\_limited} in \texttt{marshal.c} (see Appendix~\ref{app:rb_marshal_dump_limited}). This function allocates a typed-data wrapper object \texttt{wrapper} and obtains a raw pointer \texttt{arg} to the embedded \texttt{struct dump\_arg}. Since \texttt{arg} is not a Ruby object pointer, it does not keep \texttt{wrapper} reachable under conservative scanning; therefore, \texttt{wrapper} itself must remain visible in the scanned machine state for the duration of the routine. In the original build, GCC spills \texttt{wrapper} to a dedicated stack slot immediately after allocation, and the later \texttt{RB\_GC\_GUARD(wrapper)} compels a post-use access to that slot (Listing~\ref{lst:asm_rb_marshal_dump_limited}). In the variant where only \texttt{RB\_GC\_GUARD(wrapper)} is removed and CRuby is cleanly rebuilt, GCC eliminates this spill: the corresponding stack slot is used only for the stack canary, and the \texttt{wrapper} value in \texttt{rax} is overwritten by the next call. As a result, \texttt{wrapper} becomes invisible to conservative root scanning while the derived pointer \texttt{arg} remains in use.
+We confirmed this behavior in a compiled CRuby routine. We built CRuby 3.4.5 (\texttt{-O3}, x86\_64) with GCC 15.2.1 and inspected \texttt{rb\_marshal\_dump\_limited} in \texttt{marshal.c} (Appendix~\ref{app:rb_marshal_dump_limited}). The function allocates a typed-data wrapper Ruby object \texttt{wrapper} and derives \texttt{arg}, a raw pointer into that object's payload. Because \texttt{arg} is a plain C pointer, it does not keep \texttt{wrapper} reachable under conservative scanning; \texttt{wrapper} must remain visible in a register or stack slot across later calls.
+
+Listing~\ref{lst:asm_rb_marshal_dump_limited} shows the disassembly around the allocation and the return sequence. In the original build (top), the \texttt{wrapper} value returned in \texttt{rax} is stored to \texttt{[rsp+0x8]} immediately after \texttt{rb\_data\_typed\_object\_zalloc}. The next call overwrites \texttt{rax}, but the stack slot still holds \texttt{wrapper}. Near the return, \texttt{RB\_GC\_GUARD(wrapper)} forces an access to the same stack slot. In the variant where only \texttt{RB\_GC\_GUARD(wrapper)} is removed (bottom), GCC does not store \texttt{wrapper} to the stack: the next call overwrites \texttt{rax}, and \texttt{[rsp+0x8]} is used only for the stack-protection value. As a result, there is no remaining copy of \texttt{wrapper} in the scanned machine state while \texttt{arg} is still used.
 
 \begin{figure}[tb]
-\begin{lstlisting}[caption={Disassembly excerpts of \texttt{rb\_marshal\_dump\_limited} (GCC 15.2.1, x86\_64, \texttt{-O3}).},label={lst:asm_rb_marshal_dump_limited}]
-; rb_marshal_dump_limited (marshal.c), GCC 15.2.1
+\begin{lstlisting}[caption={Disassembly excerpts of \texttt{rb\_marshal\_dump\_limited} (GCC 15.2.1, x86\_64, \texttt{-O3}). Top: original with \texttt{RB\_GC\_GUARD(wrapper)}; bottom: guard removed and rebuilt.},label={lst:asm_rb_marshal_dump_limited}]
+00000000001c7410 <rb_marshal_dump_limited>:
+  1c7427:	sub    rsp,0x28
+  1c742b:	mov    r14,QWORD PTR fs:0x28
+  1c7434:	mov    QWORD PTR [rsp+0x18],r14
+  1c743c:	lea    rdx,[rip+0x4d70dd]        # 69e520 <dump_arg_data>
+  1c7443:	call   16c350 <rb_data_typed_object_zalloc>
+  1c7448:	lea    rbx,[rax+0x20]
+  1c744c:	test   BYTE PTR [rax+0x18],0x2
+  1c7450:	jne    1c7456 <rb_marshal_dump_limited+0x46>
+  1c7452:	mov    rbx,QWORD PTR [rax+0x20]
+  1c7456:	mov    QWORD PTR [rbx+0x8],0x0
+  1c745e:	mov    QWORD PTR [rsp+0x8],rax
+  1c7463:	call   2beb90 <rb_st_init_numtable>
+  1c7468:	mov    QWORD PTR [rbx+0x10],rax
+  1c746c:	call   184b70 <rb_init_identtable>
 
-; Original (RB_GC_GUARD(wrapper) present):
-sub    rsp, 0x28
-mov    QWORD PTR [rsp+0x18], r14        ; stack canary
-call   rb_data_typed_object_zalloc      ; returns wrapper in rax
-mov    QWORD PTR [rsp+0x8], rax         ; spill wrapper to stack (GC-visible)
-call   rb_st_init_numtable              ; clobbers rax, wrapper kept on stack
-...
-lea    rax, [rsp+0x8]                   ; RB_GC_GUARD(wrapper)
-mov    QWORD PTR [rsp+0x10], rax
-mov    rax, QWORD PTR [rsp+0x8]         ; reload wrapper via guard
+  1c75cc:	lea    rax,[rsp+0x8]
+  1c75d1:	mov    QWORD PTR [rsp+0x10],rax
+  1c75d6:	mov    rax,QWORD PTR [rsp+0x8]
+  1c75db:	mov    rax,QWORD PTR [rsp+0x18]
+  1c75e0:	sub    rax,QWORD PTR fs:0x28
 
-; Variant (RB_GC_GUARD(wrapper) removed):
-sub    rsp, 0x18
-mov    QWORD PTR [rsp+0x8], r14         ; stack canary (slot reused)
-call   rb_data_typed_object_zalloc      ; wrapper not spilled
-call   rb_st_init_numtable              ; clobbers rax, wrapper not in stack
-; no guard access, so wrapper is not required live here
+00000000001c7410 <rb_marshal_dump_limited>:
+  1c7427:	sub    rsp,0x18
+  1c742b:	mov    r14,QWORD PTR fs:0x28
+  1c7434:	mov    QWORD PTR [rsp+0x8],r14
+  1c743c:	lea    rdx,[rip+0x4d70dd]        # 69e520 <dump_arg_data>
+  1c7443:	call   16c350 <rb_data_typed_object_zalloc>
+  1c7448:	lea    rbx,[rax+0x20]
+  1c744c:	test   BYTE PTR [rax+0x18],0x2
+  1c7450:	jne    1c7456 <rb_marshal_dump_limited+0x46>
+  1c7452:	mov    rbx,QWORD PTR [rax+0x20]
+  1c7456:	mov    QWORD PTR [rbx+0x8],0x0
+  1c745e:	call   2beb90 <rb_st_init_numtable>
+  1c7463:	mov    QWORD PTR [rbx+0x10],rax
+  1c7467:	call   184b70 <rb_init_identtable>
+
+  1c75c7:	mov    rax,QWORD PTR [rsp+0x8]
+  1c75cc:	sub    rax,QWORD PTR fs:0x28
 \end{lstlisting}
 \end{figure}
 
